@@ -12,6 +12,7 @@ import subprocess
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prepare", type=pathlib.Path)
+    parser.add_argument("--distribution", action="store_true")
     args = parser.parse_args()
     profile_path = os.environ.get("PROVISIONING_PROFILE")
     identity = os.environ.get("SIGN_IDENTITY")
@@ -23,6 +24,11 @@ def main():
             parser.error("PROVISIONING_PROFILE requires a real SIGN_IDENTITY, not ad-hoc signing")
         profile = plistlib.loads(subprocess.check_output(["security", "cms", "-D", "-i", profile_path]))
         granted = profile.get("Entitlements", {})
+        if args.distribution:
+            if profile.get("ProvisionsAllDevices") is not True or profile.get("ProvisionedDevices"):
+                parser.error("Distribution requires an all-devices profile, not a registered-device development profile")
+            if granted.get("get-task-allow") or granted.get("com.apple.security.get-task-allow"):
+                parser.error("Distribution must not enable debugging entitlements")
         if granted.get("com.apple.developer.hid.virtual.device") is not True:
             parser.error("The profile does not grant com.apple.developer.hid.virtual.device")
         expiry = profile.get("ExpirationDate")
@@ -38,6 +44,8 @@ def main():
     elif identity:
         parser.error("SIGN_IDENTITY alone cannot grant Virtual HID; supply PROVISIONING_PROFILE")
     else:
+        if args.distribution:
+            parser.error("Distribution requires PROVISIONING_PROFILE and SIGN_IDENTITY")
         print("UNPROVISIONED BUILD: app can open, but controller connection is disabled. Virtual HID approval is required.")
 
     if args.prepare:
