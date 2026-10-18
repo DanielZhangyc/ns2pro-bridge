@@ -1,59 +1,96 @@
 # NS2 Pro Bridge
 
-独立的 Nintendo Switch 2 Pro 手柄 macOS 蓝牙适配器。把手柄呈现为系统可识别的 Xbox 手柄，并为支持接入的应用提供左右独立、低/高两组频率的原生震动接口。
+[简体中文](README.zh-CN.md)
 
-这是 **0.1.0 开发版**。蓝牙与双频编码来自已在真实 NS2 Pro 上验证的独立游戏适配路径；本仓库已做编译和离线协议测试。**独立应用的 CoreHID 权限、GameController/SDL 识别、端到端震动及重连尚待实机验收**。当前没有运行应用或切换用户正在使用的手柄。
+A standalone Nintendo Switch 2 Pro Bluetooth adapter for macOS, providing virtual Xbox controller input, ordinary rumble and a local dual-band haptics interface.
 
-## 功能与边界
+The BLE transport and vibration encoder were extracted from [smbw-mobile](https://github.com/DanielZhangyc/smbw-mobile). This app runs independently of the game runtime and does not modify game processes or files.
 
-- 系统输入：摇杆、方向键、ABXY、肩键、扳机、摇杆按压、加减、Home、Capture。按物理位置映射：Nintendo B → Xbox A、A → B、Y → X、X → Y；Home → Guide、Capture → Share。系统/游戏可能保留 Guide 或 Share 的用途。
-- BLE 连接：工厂摇杆校准、8% 死区、初始化 ACK、玩家 1 常亮灯、掉线重试、断线清空输入。
-- 普通游戏震动：接收 Xbox HID 输出，保留左右力度、时长和重复信息。左侧使用 160Hz，右侧使用 320Hz；普通接口没有原始频率，**不能恢复 Switch 原生 HD 波形**。
-- 原生双频：本机 Unix datagram 接口传入左右各两组频率/幅度，不合并频带。默认力度 2 倍；此设置此前由用户实测选择，绝对力度未与 Switch 主机校准。
-- 停止保护：双频帧最长一秒、普通零时长命令最长五秒；断开、睡眠和退出时清空震动。双频抢占时丢弃旧普通震动，不在结束后重播。
-- 单只手柄、蓝牙、macOS 26+。USB、iPad/iOS、陀螺仪、NFC、耳机口、电池 UI、C/GL/GR 自定义映射目前不支持。C/GL/GR 位保留在底层回调中。
+## Overview
 
-“系统通用”指符合虚拟 Xbox HID 路径的应用，不意味着每个游戏都实现震动。需要原始双频的应用必须主动接入 [双频协议](docs/native-haptics.md)；不注入或修改其他游戏进程。
+This is an experimental 0.1.0 build. Twenty-eight offline tests and local build checks have passed on Apple Silicon with Swift 6.4 and the macOS 27 SDK. The Apple Development-signed app connects to a physical controller; Apple GameController receives A/B presses and continuous stick changes through the virtual Xbox device. The user has confirmed the controller-image highlights and built-in connection vibration. Report09 has shown battery level 7/9, battery power and no charging; report05 previously read 3.495 V. Specific SDL/Steam games, changing power states and ordinary/dual-band motor output still need testing. See the [validation record](docs/validation.md).
 
-## 构建
+The original BLE backend has physical-controller evidence for input, player lights and dual-band vibration. Those results do not replace end-to-end testing of this extracted app. Absolute vibration strength has not been calibrated against a Switch console.
 
-需要提供 macOS 26 CoreHID SDK 的 Xcode，以及 Swift 6.2+。当前验证环境是 Apple Silicon、Swift 6.4 / macOS 27 SDK，部署目标 macOS 26。没有第三方包依赖。
+## Technical details
+
+```mermaid
+flowchart LR
+    Controller[Switch 2 Pro] <-->|BLE| Bridge[NS2 Pro Bridge]
+    Bridge <-->|Virtual Xbox HID| Games[macOS / games]
+    Client[Local application] -->|Dual-band JSON socket| Bridge
+```
+
+- **Input**: CoreBluetooth reads buttons and calibrated sticks; CoreHID publishes an `Xbox Wireless Controller` device. Face buttons map by physical position. ZL/ZR become fully pressed Xbox triggers.
+- **Controller window**: overlays live input on a controller photograph and displays connection state, device name and identifier, discovery-time RSSI and battery voltage from report05. Firmware battery level (0–9), charging and external-power flags appear only after a valid report09 arrives; the app does not infer a precise percentage. The native Settings window (`⌘,`) contains gain, the dual-band interface and a 0.3-second vibration test.
+- **Connection feedback**: plays the controller's built-in connection vibration, `0A/02` sample 3, after initialization; its command acknowledgement and physical effect have been confirmed.
+- **Ordinary rumble**: Xbox output reports retain left/right intensity, timing and repeats. Left output uses 160 Hz and right output 320 Hz; trigger amplitudes merge into the corresponding main motor. This path cannot reconstruct the original HD vibration waveform.
+- **Dual-band haptics**: applications can supply independent amplitude and frequency for the low/high bands on each side through a local JSON socket. Applications must explicitly integrate this interface.
+- **Lifecycle**: disconnect, sleep and exit clear vibration. A physical link loss retains the virtual device with neutral input until explicit disconnect or exit. Dual-band commands expire within one second and discard superseded ordinary effects; ordinary indefinite effects have a renewable five-second limit.
+
+## Build and launch
+
+Requires macOS 26+, a Switch 2 Pro controller, Bluetooth and Xcode with the macOS 26 SDK or later and Swift 6.2+. Intel Macs and macOS 26 hardware have not been tested.
+
+### Signing
+
+System-wide controller operation requires Apple's `com.apple.developer.hid.virtual.device` entitlement. The **HID Virtual Device development capability** is available for local development; use a macOS provisioning profile that grants it and matches `dev.danielzhangyc.ns2pro-bridge`, together with the corresponding signing identity. A certificate alone does not grant this entitlement.
 
 ```sh
+git clone https://github.com/DanielZhangyc/ns2pro-bridge.git
+cd ns2pro-bridge
 swift test --jobs 2
+PROVISIONING_PROFILE="/absolute/path/NS2ProBridge.provisionprofile" \
+SIGN_IDENTITY="Apple Development: Your Name (TEAMID)" \
 bash scripts/build-app.sh
 ```
 
-产物：`dist/NS2 Pro Bridge.app`。脚本只构建并做 ad-hoc 签名，不启动、安装或注册开机自启。可用 `SIGN_IDENTITY` 指定自己的签名身份；默认产物没有公证，不是 App Store 发布包。虚拟 HID entitlement 已写入签名，但实际权限是否获准须在本机运行时验证。
+The output is `dist/NS2 Pro Bridge.app`. The script validates the profile, builds, packages and signs; it does not launch or install the app. With neither signing variable set, `bash scripts/build-app.sh` creates an ad-hoc build that can open but **disables controller connection**. Setting only one variable is an error. Granting Bluetooth permission does not enable the unprovisioned build. Notarization and distribution have not been completed.
 
-## 使用
+### Connect
 
-1. 保存并结束正在使用手柄的游戏，退出 WaveBird 等其他适配器。若游戏内置了直接连接 NS2 Pro 的后端，应先关闭该后端，避免竞争同一设备。
-2. 打开构建的应用；菜单栏出现手柄图标。应用启动时不会自动连接。
-3. 选择力度（默认 2 倍），点击“连接手柄”，按系统提示允许蓝牙和虚拟 HID 所需权限；长按手柄顶部 SYNC。
-4. 显示“手柄已连接”后，检查玩家灯常亮，再启动支持系统手柄的游戏。系统识别的名称为 `Xbox Wireless Controller`。
-5. 使用“断开手柄”释放连接；“退出 NS2 Pro Bridge”或原生退出会执行停止与清理。睡眠会断开，唤醒后手动重新连接。
+1. Finish the current game and quit other adapters, including WaveBird and game-specific direct BLE backends.
+2. Open the provisioned app and use its window or menu-bar controls. It does not connect automatically.
+3. Open Settings (`⌘,`) to select vibration gain (default 2×) and optionally enable the local dual-band interface, then choose **连接**. Allow Bluetooth access if macOS requests it.
+4. Hold the controller's top SYNC button until the player lights flash. Wait for **手柄已连接** and check the player light, then start the game.
 
-输入监控是否需要授权取决于系统的 CoreHID 权限流程。若出现权限/签名错误，按实际系统提示处理；不要在运行中的游戏会话里反复启动适配器。
+Choose **断开** in the controller window to release the controller, or quit the app. Sleep disconnects it; reconnect manually after waking. The default gain comes from earlier user testing, rather than console calibration.
 
-启用双频接口后，地址为 `~/.ns2pro-bridge/haptics.sock`。客户端示例：
+### Controls
+
+| Switch 2 Pro | Xbox output |
+| --- | --- |
+| A / B / X / Y | B / A / Y / X |
+| L / R | LB / RB |
+| ZL / ZR | LT / RT, fully pressed |
+| + / − | Start / Back |
+| Stick clicks / D-pad | Stick clicks / D-pad |
+| Home / Capture | Guide / Share |
+
+Games may handle Guide and Share differently. Controller recognition and ordinary rumble depend on the target game's controller support.
+
+## Local dual-band interface
+
+When connected with **允许本机应用发送双频震动** enabled in Settings, the app binds `~/.ns2pro-bridge/haptics.sock`, a Unix datagram socket accessible only to the current user. Each UTF-8 JSON datagram supplies a complete frame for both sides. A standard-library Python client is included:
 
 ```sh
-python3 tools/haptics.py --left 0.15 160 0.1 320 --right 0.15 160 0.1 320 --seconds 1
+python3 tools/haptics.py \
+  --left  0.15 160 0.1 320 \
+  --right 0.15 160 0.1 320 \
+  --seconds 1
 ```
 
-该命令会真实驱动已经连接的手柄。首次调试请从较小幅度开始。
+Each side takes low amplitude, low frequency, high amplitude and high frequency. This command drives a connected controller. Amplitudes range from 0–1 and frequencies from 40–1252 Hz; the earlier acoustic measurements covered approximately 50–640 Hz. Sustained effects should renew a 200 ms lease about every 50 ms. A successful send confirms datagram delivery to the kernel, not motor execution.
 
-## 结构
+See the [v1 protocol](docs/native-haptics.md) for the JSON schema, lease and stop behavior, arbitration and errors.
 
-| 目录 | 用途 |
-| --- | --- |
-| `Sources/NS2Transport` | ObjC/C BLE、校准、初始化及双频报文编码 |
-| `Sources/BridgeApp` | 菜单栏应用、CoreHID 虚拟 Xbox、震动调度、本机 IPC |
-| `Tests/BridgeAppTests` | 不连接硬件的编码、边界和本机 socket 测试 |
-| `tools/haptics.py` | 标准库 Python 双频客户端 |
-| `scripts/build-app.sh` | 本机 `.app` 打包和签名 |
+## Known limitations
 
-物理断线后虚拟设备保持发布并发送中立输入，便于游戏继续使用同一逻辑手柄。点击断开或退出会撤销虚拟设备。双频接口是同一用户下的“最后一帧生效”接口，不用于不可信的多用户网络服务。
+- One controller over Bluetooth; no USB, iOS or iPadOS support.
+- No gyro, NFC, headphone audio or custom C/GL/GR mapping to Xbox output.
+- No per-game profiles, login launch or automatic updates.
+- Specific SDL/Steam games, Guide/Share, stick-direction checks, charging/power transitions and ordinary/dual-band motor output still need hardware validation. Connected quit has been checked for process exit and stop-packet submission, without motor telemetry. No universal game compatibility is claimed.
 
-详见 [验证记录](docs/validation.md) 和 [第三方声明](THIRD_PARTY_NOTICES.md)。MIT 许可证；不包含游戏资源、密钥、存档或游戏运行时。
+## License
+
+The project code uses the [MIT License](LICENSE) and retains upstream attribution. The controller photograph is copyrighted by Nintendo and is not covered by MIT; see its [source and rights notice](Resources/Controller/ATTRIBUTION.md). Other notices are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The repository contains no game resources, keys, saves or game runtime.
