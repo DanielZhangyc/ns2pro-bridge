@@ -3,12 +3,40 @@
 #ifndef NS2_TRANSPORT_H
 #define NS2_TRANSPORT_H
 #include <stdint.h>
+#include <stddef.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 typedef struct { uint64_t buttons; int32_t lx, ly, rx, ry; } ns2_state;
+typedef struct { uint64_t buttons; uint16_t lx, ly, rx, ry; } ns2_raw_input;
+// 纯输入解码：report_id 为 5 或 9，四轴为未校准 12-bit 原始值；BLE 数据不含 report ID 前缀。
+// Pure input decoding: report_id is 5 or 9, axes are uncalibrated 12-bit values; BLE data omits the report-ID prefix.
+int ns2_decode_input_report(unsigned report_id, const uint8_t *bytes, size_t length, ns2_raw_input *out);
 typedef struct { float low_amp, low_freq, high_amp, high_freq; } ns2_vibration;
+typedef struct {
+    uint8_t connected, ready;
+    uint8_t battery_known;
+    uint16_t battery_millivolts;
+    uint8_t charging_raw_known, charging_raw;
+    uint8_t charging_known, charging;
+    uint8_t battery_level_known, battery_level;
+    uint8_t external_power_known, external_power;
+    uint8_t rssi_known;
+    int32_t rssi_dbm;
+    char name[128];
+    char identifier[64];
+    char telemetry_error[160];
+} ns2_info;
+// 轮询仅复制最后收到的数据，不触发扫描、连接或 RSSI 请求；RSSI 来自发现广播。
+// Polling only copies the latest received data without scanning, connecting or requesting RSSI; RSSI comes from discovery advertisements.
+void ns2_get_info(ns2_info *out);
+// report05 为毫伏与原始充电字节；report09 为固件上报等级 0..9、充电及外接电源标志，均不是精确百分比。
+// Report05 provides millivolts and a raw charge byte; report09 provides firmware levels 0..9, charging and external-power flags, never exact percentages.
+// 纯解码只更新各自字段，保留另一种 report 的数据；无效输入返回 0 并清除本 report 的有效标志和值。
+// Pure decoders update only their own fields and preserve the other report's data; invalid input returns 0 and clears this report's flags and values.
+int ns2_decode_report05_telemetry(const uint8_t *bytes, size_t length, ns2_info *out);
+int ns2_decode_report09_telemetry(const uint8_t *bytes, size_t length, ns2_info *out);
 typedef enum {
     NS2_STATUS_IDLE, NS2_STATUS_SCANNING, NS2_STATUS_CONNECTING,
     NS2_STATUS_INITIALIZING, NS2_STATUS_READY, NS2_STATUS_DISCONNECTED,

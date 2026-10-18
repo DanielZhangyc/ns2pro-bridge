@@ -45,6 +45,7 @@ static uint64_t now_ns(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
 
 static NSString *const serviceUUID = @"AB7DE9BE-89FE-49AD-828F-118F09DF7FD0";
 static NSString *const inputUUID = @"AB7DE9BE-89FE-49AD-828F-118F09DF7FD2";
+static NSString *const powerUUID = @"7492866C-EC3E-4619-8258-32755FFCC0F8";
 static NSString *const vibrationUUID = @"CC483F51-9258-427D-A939-630C31F72B05";
 static NSString *const commandUUID = @"649D4AC9-8EB7-4E6C-AF44-1EA54FE5F005";
 static NSString *const responseUUID = @"C765A961-D9D8-4D36-A20A-5315B111836A";
@@ -60,6 +61,7 @@ static dispatch_queue_t bleQueue;
 static dispatch_group_t shutdownGroup;
 static char queueKey;
 static float rumbleGain = 2;
+static ns2_info deviceInfo;
 static ns2_state_callback stateCallback;
 static ns2_status_callback statusCallback;
 static void *callbackContext;
@@ -86,7 +88,7 @@ static void reset_state(void) {
     pthread_mutex_lock(&stateMu);
     // 断线后立即丢弃旧物理连接的输入和震动数值。
     // Immediately discard old physical input and rumble values after disconnection.
-    ready = NO; stopMask = 0; dirty = NO;
+    ready = NO; deviceInfo.ready = 0; stopMask = 0; dirty = NO;
     memset(wanted, 0, sizeof wanted); memset(actual, 0, sizeof actual);
     pthread_mutex_unlock(&stateMu);
 }
@@ -102,14 +104,14 @@ static int32_t calibrated_axis(unsigned raw, ns2_calibration cal, unsigned axis)
 @interface NS2Bridge : NSObject <CBCentralManagerDelegate, CBPeripheralDelegate> {
     CBCentralManager *central;
     CBPeripheral *device;
-    CBCharacteristic *input, *vibration, *command, *response;
+    CBCharacteristic *input, *power, *vibration, *command, *response;
     NSMutableDictionary<NSUUID *, NSNumber *> *retryAfter;
     dispatch_source_t timer;
     ns2_calibration calibration[2];
     NSUInteger step;
     NSData *pendingCommand;
-    BOOL awaitingAck, subscribedResponse, streamReady, sessionFailed;
-    uint64_t deadline, lastRumble, reports, rumblePackets;
+    BOOL awaitingAck, subscribedResponse, streamReady, sessionFailed, preferReport09;
+    uint64_t deadline, lastRumble, reports, reports09, rumblePackets;
     uint8_t sequence;
 }
 - (void)tick;
@@ -118,6 +120,8 @@ static int32_t calibrated_axis(unsigned raw, ns2_calibration cal, unsigned axis)
 - (void)stop;
 - (void)resetLink;
 - (void)dispose;
+- (void)telemetryFailed:(NSString *)reason;
+- (void)publishInput:(NSData *)data report:(unsigned)reportID;
 @end
 static NS2Bridge *bridge;
 
@@ -155,9 +159,10 @@ static NS2Bridge *bridge;
 - (void)resetLink {
     // 连接级状态必须整体失效；蓝牙断电后的旧 disconnect 回调可能不再匹配 device。
     // Invalidate all link state; after radio power loss the old disconnect callback may no longer match device.
-    reset_state(); device = nil; input = vibration = command = response = nil;
-    pendingCommand = nil; awaitingAck = subscribedResponse = streamReady = sessionFailed = NO;
-    deadline = lastRumble = reports = rumblePackets = 0; step = 0; sequence = 0;
+    reset_state(); device = nil; input = power = vibration = command = response = nil;
+    pthread_mutex_lock(&stateMu); memset(&deviceInfo, 0, sizeof deviceInfo); pthread_mutex_unlock(&stateMu);
+    pendingCommand = nil; awaitingAck = subscribedResponse = streamReady = sessionFailed = preferReport09 = NO;
+    deadline = lastRumble = reports = reports09 = rumblePackets = 0; step = 0; sequence = 0;
     memset(calibration, 0, sizeof calibration);
     emit_state((ns2_state){0});
 }
@@ -176,6 +181,13 @@ static NS2Bridge *bridge;
     // 暂时失败显式报错并限速重试，不把一次 ACK 超时变成进程内永久封禁。
     // Report transient failures and rate-limit retries instead of permanently rejecting a device after one ACK timeout.
     if (device) { retryAfter[device.identifier] = @(now_ns() + 5ull * NSEC_PER_SEC); [central cancelPeripheralConnection:device]; }
+}
+- (void)telemetryFailed:(NSString *)reason {
+    LOG("【红】NS2 Pro BLE 电量遥测：%s", reason.UTF8String);
+    pthread_mutex_lock(&stateMu);
+    ns2_decode_report09_telemetry(NULL, 0, &deviceInfo);
+    snprintf(deviceInfo.telemetry_error, sizeof deviceInfo.telemetry_error, "%s", reason.UTF8String);
+    pthread_mutex_unlock(&stateMu);
 }
 - (void)centralManagerDidUpdateState:(CBCentralManager *)manager {
     if (self != bridge) return;
@@ -202,7 +214,20 @@ static NS2Bridge *bridge;
     [retryAfter removeObjectForKey:peripheral.identifier];
     pthread_mutex_lock(&stateMu); BOOL stopped = terminal; pthread_mutex_unlock(&stateMu);
     if (stopped) return;
+    // 断线后的异步 stop 可能晚于 resetLink；新连接握手前丢弃旧 mailbox，避免截断新固件样本。
+    // A disconnect's asynchronous stop may follow resetLink; discard the old mailbox before a new handshake so it cannot cut off the new firmware sample.
+    reset_state();
     device = peripheral; device.delegate = self; sessionFailed = NO; [manager stopScan];
+    pthread_mutex_lock(&stateMu);
+    memset(&deviceInfo, 0, sizeof deviceInfo);
+    NSString *name = peripheral.name ?: advertisement[CBAdvertisementDataLocalNameKey];
+    if (name && ![name getCString:deviceInfo.name maxLength:sizeof deviceInfo.name encoding:NSUTF8StringEncoding])
+        memset(deviceInfo.name, 0, sizeof deviceInfo.name);
+    [peripheral.identifier.UUIDString getCString:deviceInfo.identifier maxLength:sizeof deviceInfo.identifier encoding:NSUTF8StringEncoding];
+    // CoreBluetooth 用 127 表示不可用 RSSI；发现值不代表持续更新的信号强度。
+    // CoreBluetooth uses 127 for unavailable RSSI; a discovery value is not a continuously updated signal reading.
+    if (rssi && rssi.intValue != 127) { deviceInfo.rssi_known = 1; deviceInfo.rssi_dbm = rssi.intValue; }
+    pthread_mutex_unlock(&stateMu);
     deadline = now_ns() + 5ull * NSEC_PER_SEC;
     LOG("NS2 Pro BLE 发现 Pro VID=057E PID=2069 id=%s RSSI=%d", peripheral.identifier.UUIDString.UTF8String, rssi.intValue);
     [manager connectPeripheral:peripheral options:nil];
@@ -210,6 +235,7 @@ static NS2Bridge *bridge;
 }
 - (void)centralManager:(CBCentralManager *)manager didConnectPeripheral:(CBPeripheral *)peripheral {
     if (self != bridge || peripheral != device) return;
+    pthread_mutex_lock(&stateMu); deviceInfo.connected = 1; pthread_mutex_unlock(&stateMu);
     [peripheral discoverServices:@[[CBUUID UUIDWithString:serviceUUID]]];
     emit_status(NS2_STATUS_INITIALIZING, @"正在读取工厂校准并初始化震动与玩家灯");
 }
@@ -240,6 +266,7 @@ static NS2Bridge *bridge;
     if (error) { [self fail:[@"特征发现失败：" stringByAppendingString:error.localizedDescription]]; return; }
     for (CBCharacteristic *ch in service.characteristics) {
         if (uuid_is(ch.UUID, inputUUID)) input = ch;
+        if (uuid_is(ch.UUID, powerUUID)) power = ch;
         if (uuid_is(ch.UUID, vibrationUUID)) vibration = ch;
         if (uuid_is(ch.UUID, commandUUID)) command = ch;
         if (uuid_is(ch.UUID, responseUUID)) response = ch;
@@ -272,6 +299,9 @@ static NS2Bridge *bridge;
         // 玩家1常亮；采用已公开且在冷启动有效的 09/07 bitmask 命令。
         // Player1 steady light, using the documented 09/07 bitmask command that works on cold start.
         case 7: bytes[0] = 9; bytes[3] = 7; bytes[5] = 8; bytes[8] = 1; length = 16; break;
+        // 固件内置连接样本，与主机记录及 WaveBird 的 0A/02 sample 3 一致。
+        // Play firmware connection sample 3 (0A/02), documented in console traces and WaveBird.
+        case 8: bytes[0] = 0x0a; bytes[3] = 2; bytes[5] = 4; bytes[8] = 3; length = 12; break;
         default: return nil;
     }
     return [NSData dataWithBytes:bytes length:length];
@@ -280,13 +310,27 @@ static NS2Bridge *bridge;
     if (self != bridge || peripheral != device || sessionFailed) return;
     pthread_mutex_lock(&stateMu); BOOL stopped = terminal; pthread_mutex_unlock(&stateMu);
     if (stopped) { [central cancelPeripheralConnection:peripheral]; return; }
+    if (ch == power) {
+        if (error || !ch.isNotifying) {
+            preferReport09 = NO;
+            [self telemetryFailed:[NSString stringWithFormat:@"订阅 report09 失败：%@", error.localizedDescription ?: @"通知未启用"]];
+        }
+        return;
+    }
     if (error || !ch.isNotifying) { [self fail:[NSString stringWithFormat:@"订阅 %@ 失败：%@", ch.UUID, error.localizedDescription ?: @"通知未启用"]]; return; }
     if (ch == response) { subscribedResponse = YES; deadline = 0; [self tick]; }
     if (ch == input) {
         streamReady = YES; deadline = 0;
-        pthread_mutex_lock(&stateMu); ready = YES; stopMask = 3; dirty = YES; pthread_mutex_unlock(&stateMu);
+        // 不主动覆盖刚播放的固件连接样本；真实停止请求仍通过 mailbox 处理。
+        // Do not overwrite the firmware connection sample; actual stop requests still use the mailbox.
+        pthread_mutex_lock(&stateMu); ready = YES; deviceInfo.ready = 1; pthread_mutex_unlock(&stateMu);
         LOG("NS2 Pro BLE ready：工厂摇杆校准；report05；玩家1灯命令已确认；双侧双频42-byte震动，15ms周期；gain=%.3g（绝对力度未与主机校准）", rumbleGain);
         emit_status(NS2_STATUS_READY, @"已连接：工厂校准与玩家 1 灯初始化完成");
+        if (self != bridge) return;
+        if (power) {
+            if (power.properties & CBCharacteristicPropertyNotify) [peripheral setNotifyValue:YES forCharacteristic:power];
+            else [self telemetryFailed:@"report09 特征不支持通知；电量与充电状态不可用"];
+        }
         [self tick];
     }
 }
@@ -310,33 +354,60 @@ static NS2Bridge *bridge;
     }
     LOG("NS2 Pro BLE ACK step=%lu cmd=%02x/%02x len=%lu", (unsigned long)step, p[0], p[3], (unsigned long)data.length);
     step++; awaitingAck = NO; pendingCommand = nil; deadline = 0;
-    if (step == 8) { deadline = now_ns() + NSEC_PER_SEC; [device setNotifyValue:YES forCharacteristic:input]; }
+    if (step == 9) { deadline = now_ns() + NSEC_PER_SEC; [device setNotifyValue:YES forCharacteristic:input]; }
     else [self tick];
 }
 - (void)peripheral:(CBPeripheral *)peripheral didUpdateValueForCharacteristic:(CBCharacteristic *)ch error:(NSError *)error {
     if (self != bridge || peripheral != device || sessionFailed) return;
+    // 开启 report09 后部分固件只持续发送此通道；必须同时解析它的真实输入布局。
+    // Some firmware streams only report09 after subscription, so its actual input layout must also be decoded.
+    if (ch == power) {
+        if (error) { preferReport09 = NO; [self telemetryFailed:[@"report09 通知读取失败：" stringByAppendingString:error.localizedDescription]]; return; }
+        NSData *powerData = ch.value;
+        pthread_mutex_lock(&stateMu);
+        int valid = ns2_decode_report09_telemetry(powerData.bytes, powerData.length, &deviceInfo);
+        if (valid) memset(deviceInfo.telemetry_error, 0, sizeof deviceInfo.telemetry_error);
+        pthread_mutex_unlock(&stateMu);
+        if (!valid) [self telemetryFailed:@"report09 长度不足 63 字节或电量等级不在 0..9"];
+        if (streamReady) [self publishInput:powerData report:9];
+        return;
+    }
     if (error) { [self fail:[@"通知读取失败：" stringByAppendingString:error.localizedDescription]]; return; }
     NSData *data = ch.value;
     if (!data) { [self fail:@"通知数据为空"]; return; }
     if (ch == response) { [self receiveAck:data]; return; }
     if (ch != input || !streamReady) return;
     if (data.length < 63) { [self fail:[NSString stringWithFormat:@"report05长度%lu不足63字节", (unsigned long)data.length]]; return; }
-    const uint8_t *p = data.bytes; uint32_t bits = le32(p + 4); unsigned axes[4];
-    unpack12(p + 10, axes); unpack12(p + 13, axes + 2);
-    if (++reports == 1 || reports % 350 == 0)
-        LOG("NS2 Pro BLE input n=%llu len=%lu counter=%u buttons=%08x raw=%u,%u,%u,%u",
-            (unsigned long long)reports, (unsigned long)data.length, le32(p), bits, axes[0], axes[1], axes[2], axes[3]);
-    static const uint8_t wireBits[21] = {3, 2, 1, 0, 11, 10, 22, 6, 23, 7, 9, 8, 19, 17, 18, 16, 12, 13, 14, 25, 24};
-    uint64_t buttons = 0;
-    for (unsigned bit = 0; bit < 21; bit++) if (bits & (1u << wireBits[bit])) buttons |= 1ull << bit;
+    pthread_mutex_lock(&stateMu);
+    int valid = ns2_decode_report05_telemetry(data.bytes, data.length, &deviceInfo);
+    pthread_mutex_unlock(&stateMu);
+    if (!valid) {
+        [self fail:@"report05 电池字段解码失败"]; return;
+    }
+    if (!preferReport09) [self publishInput:data report:5];
+}
+- (void)publishInput:(NSData *)data report:(unsigned)reportID {
+    ns2_raw_input decoded;
+    if (!ns2_decode_input_report(reportID, data.bytes, data.length, &decoded)) {
+        [self fail:[NSString stringWithFormat:@"report%02x 输入长度%lu不足63字节", reportID, (unsigned long)data.length]]; return;
+    }
+    if (reportID == 9 && !preferReport09) {
+        preferReport09 = YES;
+        LOG("NS2 Pro BLE input source=report09；report05仅更新电压，避免重复输入");
+    }
+    uint64_t count = reportID == 9 ? ++reports09 : ++reports;
+    if (count == 1 || count % 350 == 0)
+        LOG("NS2 Pro BLE input report=%02x n=%llu len=%lu buttons=%llx raw=%u,%u,%u,%u",
+            reportID, (unsigned long long)count, (unsigned long)data.length, (unsigned long long)decoded.buttons,
+            decoded.lx, decoded.ly, decoded.rx, decoded.ry);
     // 回调在锁外调用，允许调用者在回调内停止或读取能力。
     // Invoke callbacks outside the mutex so callers may stop or query capabilities from a callback.
     pthread_mutex_lock(&stateMu);
     BOOL publish = active && ready && !terminal;
     pthread_mutex_unlock(&stateMu);
-    if (publish) emit_state((ns2_state){buttons,
-        calibrated_axis(axes[0], calibration[0], 0), calibrated_axis(axes[1], calibration[0], 1),
-        calibrated_axis(axes[2], calibration[1], 0), calibrated_axis(axes[3], calibration[1], 1)});
+    if (publish) emit_state((ns2_state){decoded.buttons,
+        calibrated_axis(decoded.lx, calibration[0], 0), calibrated_axis(decoded.ly, calibration[0], 1),
+        calibrated_axis(decoded.rx, calibration[1], 0), calibrated_axis(decoded.ry, calibration[1], 1)});
 }
 - (void)tick {
     if (self != bridge) return;
@@ -346,7 +417,7 @@ static NS2Bridge *bridge;
     if (!device || device.state != CBPeripheralStateConnected) return;
     pthread_mutex_lock(&stateMu); BOOL stopped = terminal; pthread_mutex_unlock(&stateMu);
     if (!streamReady) {
-        if (stopped || !subscribedResponse || awaitingAck || step >= 8) return;
+        if (stopped || !subscribedResponse || awaitingAck || step >= 9) return;
         if (!pendingCommand) { pendingCommand = [self commandForStep]; deadline = now + NSEC_PER_SEC; }
         if (!device.canSendWriteWithoutResponse) return;
         [device writeValue:pendingCommand forCharacteristic:command type:CBCharacteristicWriteWithoutResponse];
@@ -407,6 +478,7 @@ int ns2_start(ns2_state_callback state, ns2_status_callback status, void *contex
         stateCallback = state; statusCallback = status; callbackContext = context;
         pthread_mutex_lock(&stateMu);
         terminal = NO; active = YES; ready = NO; dirty = NO; shutdownSent = NO; stopMask = 0;
+        memset(&deviceInfo, 0, sizeof deviceInfo);
         memset(wanted, 0, sizeof wanted); memset(actual, 0, sizeof actual); rumbleGain = gainValue;
         pthread_mutex_unlock(&stateMu);
         shutdownGroup = dispatch_group_create();
@@ -466,6 +538,10 @@ void ns2_actual(unsigned side, ns2_vibration *out) {
     if (!out) return;
     pthread_mutex_lock(&stateMu); *out = side < 2 ? actual[side] : (ns2_vibration){0}; pthread_mutex_unlock(&stateMu);
 }
+void ns2_get_info(ns2_info *out) {
+    if (!out) return;
+    pthread_mutex_lock(&stateMu); *out = deviceInfo; pthread_mutex_unlock(&stateMu);
+}
 void ns2_stop_rumble(void) {
     pthread_mutex_lock(&stateMu);
     memset(wanted, 0, sizeof wanted); stopMask = 3; dirty = YES;
@@ -482,7 +558,7 @@ int ns2_shutdown(const char *reason, unsigned timeout_ms) {
         pthread_mutex_lock(&stateMu);
         connected = ready;
         if (!terminal && connected) dispatch_group_enter(shutdownGroup);
-        terminal = YES; active = NO; stopMask = 3; dirty = YES;
+        terminal = YES; active = NO; deviceInfo.ready = 0; stopMask = 3; dirty = YES;
         memset(wanted, 0, sizeof wanted); memset(actual, 0, sizeof actual);
         pthread_mutex_unlock(&stateMu);
         group = shutdownGroup;
