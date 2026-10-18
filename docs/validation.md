@@ -2,6 +2,14 @@
 
 2026-10-18，Apple Silicon 本机，Swift 6.4、macOS 27 SDK、部署目标 macOS 26。
 
+## 启动缺陷与当前阻塞
+
+初次交付把受限 Virtual HID entitlement 加入 ad-hoc 签名，导致用户无法打开。系统 amfid 日志返回 `Code=-424: The file is adhoc signed but contains restricted entitlements`。此前签名完整性检查通过，不能证明应用可以启动；初次验收遗漏了这一点。
+
+构建脚本现已禁止这种组合。没有授权描述文件时，默认构建不携带受限权限，可以打开，但显示“缺少系统手柄授权”并禁用连接。完整模式必须提供 `PROVISIONING_PROFILE` 和对应的 `SIGN_IDENTITY`，脚本先检查 Virtual HID 授权、到期时间及应用标识。本机现有描述文件均为 iOS，未包含此授权；普通开发者证书本身不能补齐它。
+
+修复后 16 项测试再次通过，Release 重新打包，并更新 `/Applications/NS2 Pro Bridge.app`。`open -g` 成功，后续确认应用进程持续运行。未点击连接、未启动 BLE 或虚拟 HID。启动错误已修复，**替代 WaveBird 的全系统模式仍被 Apple 授权阻塞，不能作为已完成功能交付**。
+
 ## 已完成
 
 - `swift test --jobs 2`：16 项 XCTest，全部通过。
@@ -17,7 +25,7 @@
 
 ## 尚未验证
 
-用户正在使用同一只手柄玩游戏，本轮未启动应用、激活 CoreHID、扫描蓝牙或切换设备连接。以下仍需在游戏结束后验证：
+未激活 CoreHID、扫描蓝牙或切换设备连接。以下仍需在取得授权且游戏结束后验证：
 
 1. 系统是否接受本机签名和虚拟 HID entitlement，蓝牙与相关权限提示是否正常。
 2. 独立应用连接后，Apple GameController 和目标 SDL/Steam 游戏是否识别输入、Guide/Share 与普通震动。

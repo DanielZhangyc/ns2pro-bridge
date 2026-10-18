@@ -33,6 +33,13 @@ private let statusCallback: ns2_status_callback = { status, message, context in
     @Published var busy = false
     @Published var gain = 2.0
     @Published var nativeEnabled = true
+    let provisioned = Bundle.main.object(forInfoDictionaryKey: "NS2VirtualHIDProvisioned") as? Bool == true
+    private init() {
+        if !provisioned {
+            status = "缺少系统手柄授权"
+            detail = "此构建尚无 Apple Virtual HID 授权，无法连接为系统手柄。需要匹配的描述文件和正式签名；重新允许蓝牙不能解决。"
+        }
+    }
     private var session: UInt64 = 0
     private var callbackContext: CallbackContext?
     private var ready = false
@@ -51,7 +58,7 @@ private let statusCallback: ns2_status_callback = { status, message, context in
     })
 
     func connect() async {
-        guard !running, !busy else { return }
+        guard provisioned, !running, !busy else { return }
         busy = true
         defer { busy = false }
         session &+= 1
@@ -250,7 +257,7 @@ private let statusCallback: ns2_status_callback = { status, message, context in
                     Text("3 倍").tag(3.0)
                 }.disabled(model.busy)
                 Toggle("启用本机双频接口", isOn: $model.nativeEnabled).disabled(model.busy)
-                Button("连接手柄") { Task { await model.connect() } }.disabled(model.busy)
+                Button("连接手柄") { Task { await model.connect() } }.disabled(model.busy || !model.provisioned)
             }
             Divider()
             Button("退出 NS2 Pro Bridge") { NSApp.terminate(nil) }.keyboardShortcut("q")
