@@ -60,7 +60,10 @@ enum XboxReports {
         var bytes = [UInt8](repeating: 0, count: 17)
         bytes[0] = 1
         for (offset, axis) in zip([1, 3, 5, 7], [lx, ly, rx, ry]) {
-            let value = UInt16(clamping: Int64(max(-32767, min(32767, axis))) + 32768)
+            // Nintendo Y 向上为正，Xbox HID Y 向下为正；先限幅再反号。
+            // Nintendo Y is positive upward; Xbox HID Y is positive downward. Clamp before negating.
+            let bounded = Int64(max(-32767, min(32767, axis)))
+            let value = UInt16(clamping: ((offset == 3 || offset == 7) ? -bounded : bounded) + 32768)
             bytes[offset] = UInt8(truncatingIfNeeded: value)
             bytes[offset + 1] = UInt8(value >> 8)
         }

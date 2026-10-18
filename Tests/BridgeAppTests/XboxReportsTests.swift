@@ -25,11 +25,20 @@ final class XboxReportsTests: XCTestCase {
                                        lx: .min, ly: .max, rx: -32767, ry: 32767)
         XCTAssertEqual(Array(report[9...12]), [255, 3, 255, 3])
         XCTAssertEqual(report[13], 2)
-        XCTAssertEqual(Array(report[1...8]), [1, 0, 255, 255, 1, 0, 255, 255])
+        XCTAssertEqual(Array(report[1...8]), [1, 0, 1, 0, 1, 0, 1, 0])
         let opposed = XboxReports.input(buttons: (1 << 12) | (1 << 14), lx: 0, ly: 0, rx: 0, ry: 0)
         XCTAssertEqual(opposed[13], 0)
         let fragmentRisk = XboxReports.input(buttons: 0, lx: 255, ly: 0, rx: 0, ry: 0)
         XCTAssertEqual(fragmentRisk[1] & 0x80, 0)
+    }
+
+    func testStickUpUsesMinimumHIDYAndDownUsesMaximum() {
+        let up = XboxReports.input(buttons: 0, lx: 0, ly: 32767, rx: 0, ry: 32767)
+        let down = XboxReports.input(buttons: 0, lx: 0, ly: .min, rx: 0, ry: .min)
+        for offset in [3, 7] {
+            XCTAssertEqual(Array(up[offset...offset + 1]), [1, 0])
+            XCTAssertEqual(Array(down[offset...offset + 1]), [255, 255])
+        }
     }
 
     func testPIDRumbleWithAndWithoutReportIDPrefix() throws {
