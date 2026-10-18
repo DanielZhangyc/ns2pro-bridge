@@ -9,9 +9,11 @@
 <key>CFBundleIconName</key><string>AppIcon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>0.1.0</string>
-<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleVersion</key><string>2</string>
+<key>CFBundleDevelopmentRegion</key><string>en</string>
+<key>CFBundleLocalizations</key><array><string>en</string><string>zh-Hans</string></array>
 <key>LSMinimumSystemVersion</key><string>26.0</string>
 <key>LSUIElement</key><false/>
-<key>NSBluetoothAlwaysUsageDescription</key><string>连接你的 Nintendo Switch 2 Pro 手柄，接收按键并发送震动。</string>
+<key>NSBluetoothAlwaysUsageDescription</key><string>Connect your Nintendo Switch 2 Pro controller to receive input and send vibration.</string>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>

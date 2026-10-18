@@ -47,11 +47,11 @@ struct ControllerInputDiagram: View {
             .accessibilityHidden(true)
             HStack(spacing: 12) {
                 ForEach([(6, "L"), (8, "ZL"), (19, "GL"), (20, "GR"), (9, "ZR"), (7, "R")], id: \.0) { bit, name in
-                    Text(name).font(.caption.monospaced().weight(.medium))
+                    Text(L10n.text(name)).font(.caption.monospaced().weight(.medium))
                         .foregroundStyle(pressed(bit) ? Color.accentColor : .secondary)
                         .padding(.horizontal, 7).padding(.vertical, 4)
                         .background(pressed(bit) ? Color.accentColor.opacity(0.15) : .clear, in: Capsule())
-                        .accessibilityLabel("\(name)，\(pressed(bit) ? "按下" : "松开")")
+                        .accessibilityLabel(L10n.format("%@, %@", L10n.text(name), L10n.text(pressed(bit) ? "Pressed" : "Released")))
                 }
             }
         }

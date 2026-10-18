@@ -27,31 +27,29 @@ private let statusCallback: ns2_status_callback = { status, message, context in
 
 @MainActor final class BridgeModel: ObservableObject {
     static let shared = BridgeModel()
-    @Published var status = "尚未连接"
-    @Published var detail = "结束当前游戏并退出其他适配器后，点击连接，再长按手柄顶部 SYNC。"
+    @Published var status = L10n.text("Not connected")
+    @Published var detail = L10n.text("Quit your game and other controller adapters, click Connect, then hold SYNC on top of the controller.")
     @Published var running = false
     @Published var busy = false
     @Published var gain = 2.0
     @Published var nativeEnabled = true
     @Published private(set) var ready = false
-    @Published private(set) var deviceName = "Nintendo Switch 2 Pro"
-    @Published private(set) var deviceIdentifier = "未连接"
+    @Published private(set) var deviceName = L10n.text("Nintendo Switch 2 Pro")
+    @Published private(set) var deviceIdentifier = L10n.text("Not connected")
     @Published private(set) var batteryMillivolts: Int?
     @Published private(set) var batteryLevel: Int?
     @Published private(set) var externalPower: Bool?
     @Published private(set) var telemetryError = ""
     @Published private(set) var charging: Bool?
     @Published private(set) var signalStrength: Int?
-    @Published private(set) var buttons: UInt64 = 0
-    @Published private(set) var axes = [Double](repeating: 0, count: 4)
     @Published private(set) var connectedSince: Date?
-    private var lastInputDisplay = 0.0
+    let input = ControllerInputModel()
     private var lastInfoDisplay = 0.0
     let provisioned = Bundle.main.object(forInfoDictionaryKey: "NS2VirtualHIDProvisioned") as? Bool == true
     private init() {
         if !provisioned {
-            status = "缺少系统手柄授权"
-            detail = "此构建尚无 Apple Virtual HID 授权，无法连接为系统手柄。需要匹配的描述文件和正式签名；重新允许蓝牙不能解决。"
+            status = L10n.text("System controller authorization missing")
+            detail = L10n.text("This build lacks Apple Virtual HID authorization and cannot connect as a system controller. It needs a matching provisioning profile and signing identity; granting Bluetooth access again will not resolve this.")
         }
     }
     private var session: UInt64 = 0
@@ -75,7 +73,7 @@ private let statusCallback: ns2_status_callback = { status, message, context in
         busy = true
         defer { busy = false }
         session &+= 1
-        status = "正在准备虚拟手柄"
+        status = L10n.text("Preparing virtual controller")
         do {
             await virtual.setRumbleSuppressed(true)
             try await virtual.start()
@@ -84,11 +82,11 @@ private let statusCallback: ns2_status_callback = { status, message, context in
             let context = CallbackContext(session)
             callbackContext = context
             guard ns2_start(inputCallback, statusCallback, Unmanaged.passUnretained(context).toOpaque()) == 1 else {
-                throw NativeHapticsError.system("启动蓝牙适配失败", EIO)
+                throw NativeHapticsError.system(L10n.text("Could not start the Bluetooth adapter"), EIO)
             }
             running = true
-            status = "正在搜索手柄"
-            detail = "长按手柄顶部 SYNC，直到玩家灯闪烁。"
+            status = L10n.text("Searching for controller")
+            detail = L10n.text("Hold SYNC on top of the controller until the player LEDs flash.")
             let expiryTimer = Timer(timeInterval: 0.025, repeats: true) { _ in
                 MainActor.assumeIsolated { BridgeModel.shared.expireRumble() }
             }
@@ -98,7 +96,7 @@ private let statusCallback: ns2_status_callback = { status, message, context in
             native.stop()
             await virtual.stop()
             callbackContext = nil
-            status = "连接失败"
+            status = L10n.text("Connection failed")
             detail = error.localizedDescription
         }
     }
@@ -120,18 +118,18 @@ private let statusCallback: ns2_status_callback = { status, message, context in
         rumbleRevision &+= 1
         native.stop()
         ns2_stop_rumble()
-        let stopped = ns2_shutdown("用户断开 / user disconnect", 350)
+        let stopped = ns2_shutdown(L10n.text("User disconnect"), 350)
         callbackContext = nil
         await virtual.stop()
-        status = "已断开"
-        detail = stopped == 1 ? "手柄已释放，可以连接其他应用。" : "已关闭连接，但停止震动报文未确认提交。"
+        status = L10n.text("Disconnected")
+        detail = L10n.text(stopped == 1 ? "Controller released. You can connect it to another app." : "Connection closed, but submission of the rumble stop report was not confirmed.")
         busy = false
     }
 
     fileprivate func receiveStatus(session: UInt64, value: UInt32, message: String) {
         guard session == self.session, running else { return }
         let wasReady = ready
-        ready = value == NS2_STATUS_READY.rawValue
+        update(\.ready, value == NS2_STATUS_READY.rawValue)
         if ready && !wasReady {
             connectedSince = Date()
             refreshDeviceInfo()
@@ -141,12 +139,12 @@ private let statusCallback: ns2_status_callback = { status, message, context in
             }
         }
         switch value {
-        case NS2_STATUS_READY.rawValue: status = "手柄已连接"; detail = "玩家灯应常亮。支持系统手柄输入、普通震动和双频接口。"
-        case NS2_STATUS_SCANNING.rawValue: status = "正在搜索手柄"
-        case NS2_STATUS_CONNECTING.rawValue: status = "正在连接手柄"
-        case NS2_STATUS_INITIALIZING.rawValue: status = "正在初始化手柄"
-        case NS2_STATUS_DISCONNECTED.rawValue: status = "连接已中断"; detail = "按手柄按键唤醒，或长按 SYNC 重新连接。"
-        case NS2_STATUS_ERROR.rawValue, NS2_STATUS_UNAVAILABLE.rawValue: status = "手柄暂不可用"; detail = message
+        case NS2_STATUS_READY.rawValue: update(\.status, L10n.text("Controller connected")); update(\.detail, L10n.text("The player LED should stay on. System controller input, standard rumble, and the dual-frequency interface are available."))
+        case NS2_STATUS_SCANNING.rawValue: update(\.status, L10n.text("Searching for controller"))
+        case NS2_STATUS_CONNECTING.rawValue: update(\.status, L10n.text("Connecting to controller"))
+        case NS2_STATUS_INITIALIZING.rawValue: update(\.status, L10n.text("Initializing controller"))
+        case NS2_STATUS_DISCONNECTED.rawValue: update(\.status, L10n.text("Connection interrupted")); update(\.detail, L10n.text("Press a controller button to wake it, or hold SYNC to reconnect."))
+        case NS2_STATUS_ERROR.rawValue, NS2_STATUS_UNAVAILABLE.rawValue: update(\.status, L10n.text("Controller unavailable")); update(\.detail, message)
         default: break
         }
         if wasReady && !ready {
@@ -165,12 +163,7 @@ private let statusCallback: ns2_status_callback = { status, message, context in
 
     fileprivate func publish(session: UInt64, buttons: UInt64, lx: Int32, ly: Int32, rx: Int32, ry: Int32) async {
         guard session == self.session, ready else { return }
-        let now = ProcessInfo.processInfo.systemUptime
-        if buttons != self.buttons || now - lastInputDisplay >= 1.0 / 30 {
-            self.buttons = buttons
-            axes = [lx, ly, rx, ry].map { Double($0) / 32767 }
-            lastInputDisplay = now
-        }
+        input.receive(ControllerInputSnapshot(buttons: buttons, lx: lx, ly: ly, rx: rx, ry: ry))
         do { try await virtual.publish(buttons: buttons, lx: lx, ly: ly, rx: rx, ry: ry) }
         catch { if session == self.session { await outputFailed(error) } }
     }
@@ -183,7 +176,7 @@ private let statusCallback: ns2_status_callback = { status, message, context in
 
     private func outputFailed(_ error: Error) async {
         await disconnect()
-        status = "虚拟手柄输出失败"
+        status = L10n.text("Virtual controller output failed")
         detail = error.localizedDescription
     }
 
@@ -234,7 +227,7 @@ private let statusCallback: ns2_status_callback = { status, message, context in
 
     private func expireRumble() {
         let now = ProcessInfo.processInfo.systemUptime
-        if now - lastInfoDisplay >= 0.25 {
+        if input.isVisible && now - lastInfoDisplay >= 0.25 {
             refreshDeviceInfo()
             lastInfoDisplay = now
         }
@@ -253,35 +246,39 @@ private let statusCallback: ns2_status_callback = { status, message, context in
     private func refreshDeviceInfo() {
         var info = ns2_info()
         ns2_get_info(&info)
-        deviceName = withUnsafeBytes(of: info.name) { raw in
+        let name = withUnsafeBytes(of: info.name) { raw in
             String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
         }
-        if deviceName.isEmpty { deviceName = "Nintendo Switch 2 Pro" }
-        deviceIdentifier = withUnsafeBytes(of: info.identifier) { raw in
+        update(\.deviceName, name.isEmpty ? L10n.text("Nintendo Switch 2 Pro") : name)
+        let identifier = withUnsafeBytes(of: info.identifier) { raw in
             String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
         }
-        if deviceIdentifier.isEmpty { deviceIdentifier = "未连接" }
-        batteryMillivolts = info.battery_known != 0 ? Int(info.battery_millivolts) : nil
-        batteryLevel = info.battery_level_known != 0 ? Int(info.battery_level) : nil
-        externalPower = info.external_power_known != 0 ? info.external_power != 0 : nil
-        telemetryError = withUnsafeBytes(of: info.telemetry_error) { raw in
+        update(\.deviceIdentifier, identifier.isEmpty ? L10n.text("Not connected") : identifier)
+        update(\.batteryMillivolts, info.battery_known != 0 ? Int(info.battery_millivolts) : nil)
+        update(\.batteryLevel, info.battery_level_known != 0 ? Int(info.battery_level) : nil)
+        update(\.externalPower, info.external_power_known != 0 ? info.external_power != 0 : nil)
+        let error = withUnsafeBytes(of: info.telemetry_error) { raw in
             String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
         }
-        charging = info.charging_known != 0 ? info.charging != 0 : nil
-        signalStrength = info.rssi_known != 0 ? Int(info.rssi_dbm) : nil
+        update(\.telemetryError, error)
+        update(\.charging, info.charging_known != 0 ? info.charging != 0 : nil)
+        update(\.signalStrength, info.rssi_known != 0 ? Int(info.rssi_dbm) : nil)
+    }
+
+    private func update<Value: Equatable>(_ keyPath: ReferenceWritableKeyPath<BridgeModel, Value>, _ value: Value) {
+        if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
     }
 
     private func clearDeviceInfo() {
-        batteryMillivolts = nil
-        batteryLevel = nil
-        externalPower = nil
-        telemetryError = ""
-        charging = nil
-        signalStrength = nil
-        connectedSince = nil
-        buttons = 0
-        axes = [Double](repeating: 0, count: 4)
-        deviceIdentifier = "未连接"
+        update(\.batteryMillivolts, nil)
+        update(\.batteryLevel, nil)
+        update(\.externalPower, nil)
+        update(\.telemetryError, "")
+        update(\.charging, nil)
+        update(\.signalStrength, nil)
+        update(\.connectedSince, nil)
+        input.clear()
+        update(\.deviceIdentifier, L10n.text("Not connected"))
     }
 
     func testRumble() {
@@ -311,7 +308,7 @@ private let statusCallback: ns2_status_callback = { status, message, context in
 
 @main struct NS2ProBridgeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @StateObject private var model = BridgeModel.shared
+    private let model = BridgeModel.shared
     var body: some Scene {
         Window("NS2 Pro Bridge", id: "controller") {
             ControllerDetailView(model: model)
@@ -319,20 +316,36 @@ private let statusCallback: ns2_status_callback = { status, message, context in
         .defaultSize(width: 560, height: 650)
         .windowResizability(.contentMinSize)
         Settings { BridgeSettingsView(model: model) }
-        MenuBarExtra("NS2 Pro Bridge", systemImage: model.running ? "gamecontroller.fill" : "gamecontroller") {
-            ControllerWindowButton()
-            Divider()
-            Text(model.status).font(.headline)
-            Text(model.detail).font(.caption)
-            Divider()
-            if model.running {
-                Button("断开手柄") { Task { await model.disconnect() } }.disabled(model.busy)
-            } else {
-                Button("连接手柄") { Task { await model.connect() } }.disabled(model.busy || !model.provisioned)
-            }
-            SettingsLink { Text("设置…") }
-            Divider()
-            Button("退出 NS2 Pro Bridge") { NSApp.terminate(nil) }.keyboardShortcut("q")
+        MenuBarExtra {
+            BridgeMenuView(model: model)
+        } label: {
+            BridgeMenuLabel(model: model)
         }
+    }
+}
+
+private struct BridgeMenuLabel: View {
+    @ObservedObject var model: BridgeModel
+    var body: some View {
+        Label("NS2 Pro Bridge", systemImage: model.running ? "gamecontroller.fill" : "gamecontroller")
+    }
+}
+
+private struct BridgeMenuView: View {
+    @ObservedObject var model: BridgeModel
+    var body: some View {
+        ControllerWindowButton()
+        Divider()
+        Text(model.status).font(.headline)
+        Text(model.detail).font(.caption)
+        Divider()
+        if model.running {
+            Button("Disconnect Controller") { Task { await model.disconnect() } }.disabled(model.busy)
+        } else {
+            Button("Connect Controller") { Task { await model.connect() } }.disabled(model.busy || !model.provisioned)
+        }
+        SettingsLink { Text("Settings…") }
+        Divider()
+        Button("Quit NS2 Pro Bridge") { NSApp.terminate(nil) }.keyboardShortcut("q")
     }
 }

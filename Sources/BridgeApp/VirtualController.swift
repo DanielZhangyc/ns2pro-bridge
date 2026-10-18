@@ -15,11 +15,11 @@ actor VirtualController {
         var errorDescription: String? {
             switch self {
             case .creationFailed:
-                return "【红】无法创建 CoreHID 虚拟手柄，请检查输入监控权限和应用签名。"
+                return L10n.text("Could not create the CoreHID virtual controller. Check Input Monitoring access and the app signature.")
             case .notRunning:
-                return "【红】虚拟手柄尚未启动。"
+                return L10n.text("The virtual controller is not running.")
             case .lifecycleChanged:
-                return "【红】虚拟手柄启动期间会话已停止。"
+                return L10n.text("The session stopped while the virtual controller was starting.")
             }
         }
     }

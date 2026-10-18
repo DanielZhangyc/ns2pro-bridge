@@ -21,7 +21,9 @@ struct HapticFrame: Codable, Sendable {
 
     static func decode(_ data: Data) throws -> HapticFrame {
         guard data.count <= 2048 else { throw NativeHapticsError.invalidFrame }
-        let frame = try JSONDecoder().decode(Self.self, from: data)
+        let frame: Self
+        do { frame = try JSONDecoder().decode(Self.self, from: data) }
+        catch is DecodingError { throw NativeHapticsError.invalidFrame }
         guard frame.version == 1, (0...1000).contains(frame.durationMilliseconds),
               frame.left.isValid, frame.right.isValid else { throw NativeHapticsError.invalidFrame }
         return frame
@@ -35,10 +37,10 @@ enum NativeHapticsError: LocalizedError {
     case unsafeEndpoint
     var errorDescription: String? {
         switch self {
-        case .invalidFrame: "双频报文无效：检查幅度、频率和持续时间。"
-        case let .system(operation, code): "\(operation)：\(String(cString: strerror(code)))"
-        case .unsafeDirectory: "双频接口目录权限不安全；请使用当前用户拥有的 0700 目录。"
-        case .unsafeEndpoint: "双频接口文件类型、所有者或权限不安全；未修改现有文件。"
+        case .invalidFrame: L10n.text("Invalid dual-frequency frame. Check amplitudes, frequencies, and duration.")
+        case let .system(operation, code): L10n.format("%@: %@", operation, String(cString: strerror(code)))
+        case .unsafeDirectory: L10n.text("Unsafe dual-frequency interface directory permissions. Use a directory owned by the current user with mode 0700.")
+        case .unsafeEndpoint: L10n.text("Unsafe dual-frequency endpoint type, ownership, or permissions. The existing file was not changed.")
         }
     }
 }
@@ -71,10 +73,10 @@ enum NativeHapticsError: LocalizedError {
         guard descriptor == -1 else { return }
         let directory = directoryURL.path
         if mkdir(directory, 0o700) != 0 && errno != EEXIST {
-            throw NativeHapticsError.system("创建双频接口目录失败", errno)
+            throw NativeHapticsError.system(L10n.text("Could not create the dual-frequency interface directory"), errno)
         }
         let directoryFD = open(directory, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        guard directoryFD >= 0 else { throw NativeHapticsError.system("打开双频接口目录失败", errno) }
+        guard directoryFD >= 0 else { throw NativeHapticsError.system(L10n.text("Could not open the dual-frequency interface directory"), errno) }
         var accepted = false
         defer { if !accepted { close(directoryFD) } }
         var info = stat()
@@ -85,7 +87,7 @@ enum NativeHapticsError: LocalizedError {
         // 生命周期锁先于端点检查与回收，禁止另一个实例删除仍在使用的 socket。
         // Acquire a lifetime lock before checking or recovering the endpoint, preventing another instance from unlinking a live socket.
         let lockFD = openat(directoryFD, "haptics.lock", O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
-        guard lockFD >= 0 else { throw NativeHapticsError.system("打开双频接口锁失败", errno) }
+        guard lockFD >= 0 else { throw NativeHapticsError.system(L10n.text("Could not open the dual-frequency interface lock"), errno) }
         defer { if !accepted { close(lockFD) } }
         var lockInfo = stat()
         guard fstat(lockFD, &lockInfo) == 0, lockInfo.st_uid == getuid(), lockInfo.st_nlink == 1,
@@ -93,14 +95,14 @@ enum NativeHapticsError: LocalizedError {
             throw NativeHapticsError.unsafeEndpoint
         }
         guard flock(lockFD, LOCK_EX | LOCK_NB) == 0 else {
-            throw NativeHapticsError.system("双频接口已由另一个实例占用", errno)
+            throw NativeHapticsError.system(L10n.text("Another instance is using the dual-frequency interface"), errno)
         }
         let path = directoryURL.appendingPathComponent("haptics.sock").path
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
         let bytes = Array(path.utf8CString)
         guard bytes.count <= MemoryLayout.size(ofValue: address.sun_path) else {
-            throw NativeHapticsError.system("双频接口路径过长", ENAMETOOLONG)
+            throw NativeHapticsError.system(L10n.text("The dual-frequency interface path is too long"), ENAMETOOLONG)
         }
         withUnsafeMutableBytes(of: &address.sun_path) { target in
             bytes.withUnsafeBytes { target.copyBytes(from: $0) }
@@ -111,11 +113,11 @@ enum NativeHapticsError: LocalizedError {
             guard endpoint.st_uid == getuid(), endpoint.st_mode & S_IFMT == S_IFSOCK,
                   endpoint.st_mode & 0o777 == 0o600 else { throw NativeHapticsError.unsafeEndpoint }
             let probe = socket(AF_UNIX, SOCK_DGRAM, 0)
-            guard probe >= 0 else { throw NativeHapticsError.system("检查双频端点失败", errno) }
+            guard probe >= 0 else { throw NativeHapticsError.system(L10n.text("Could not check the dual-frequency endpoint"), errno) }
             guard fcntl(probe, F_SETFL, O_NONBLOCK) == 0 else {
                 let code = errno
                 close(probe)
-                throw NativeHapticsError.system("配置双频端点检查失败", code)
+                throw NativeHapticsError.system(L10n.text("Could not configure the dual-frequency endpoint check"), code)
             }
             let result = withUnsafePointer(to: &address) {
                 $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
@@ -124,36 +126,36 @@ enum NativeHapticsError: LocalizedError {
             }
             let probeError = errno
             close(probe)
-            guard result != 0 else { throw NativeHapticsError.system("现有双频端点仍在使用", EADDRINUSE) }
+            guard result != 0 else { throw NativeHapticsError.system(L10n.text("The existing dual-frequency endpoint is still in use"), EADDRINUSE) }
             guard probeError == ECONNREFUSED else {
-                throw NativeHapticsError.system("无法确认双频端点已失效", probeError)
+                throw NativeHapticsError.system(L10n.text("Could not confirm that the dual-frequency endpoint is inactive"), probeError)
             }
             guard unlinkat(directoryFD, "haptics.sock", 0) == 0 else {
-                throw NativeHapticsError.system("清理失效双频端点失败", errno)
+                throw NativeHapticsError.system(L10n.text("Could not remove the inactive dual-frequency endpoint"), errno)
             }
         } else if errno != ENOENT {
-            throw NativeHapticsError.system("检查双频端点文件失败", errno)
+            throw NativeHapticsError.system(L10n.text("Could not inspect the dual-frequency endpoint file"), errno)
         }
         let fd = socket(AF_UNIX, SOCK_DGRAM, 0)
-        guard fd >= 0 else { throw NativeHapticsError.system("创建双频接口失败", errno) }
+        guard fd >= 0 else { throw NativeHapticsError.system(L10n.text("Could not create the dual-frequency interface"), errno) }
         defer { if !accepted { close(fd) } }
         guard fcntl(fd, F_SETFL, O_NONBLOCK) == 0, fcntl(fd, F_SETFD, FD_CLOEXEC) == 0 else {
-            throw NativeHapticsError.system("配置双频接口失败", errno)
+            throw NativeHapticsError.system(L10n.text("Could not configure the dual-frequency interface"), errno)
         }
         let result = withUnsafePointer(to: &address) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
         }
-        guard result == 0 else { throw NativeHapticsError.system("绑定双频接口失败；检查是否已有实例运行或遗留 socket", errno) }
+        guard result == 0 else { throw NativeHapticsError.system(L10n.text("Could not bind the dual-frequency interface; check for another instance or a stale socket"), errno) }
         guard chmod(path, 0o600) == 0 else {
             let code = errno
             unlink(path)
-            throw NativeHapticsError.system("设置双频接口权限失败", code)
+            throw NativeHapticsError.system(L10n.text("Could not set dual-frequency interface permissions"), code)
         }
         var boundInfo = stat()
         guard fstatat(directoryFD, "haptics.sock", &boundInfo, AT_SYMLINK_NOFOLLOW) == 0 else {
             let code = errno
             unlinkat(directoryFD, "haptics.sock", 0)
-            throw NativeHapticsError.system("读取双频端点状态失败", code)
+            throw NativeHapticsError.system(L10n.text("Could not read the dual-frequency endpoint status"), code)
         }
         descriptor = fd
         boundPath = path
@@ -178,7 +180,7 @@ enum NativeHapticsError: LocalizedError {
             let count = recv(descriptor, &buffer, buffer.count, 0)
             if count < 0 {
                 if errno == EAGAIN || errno == EWOULDBLOCK { return }
-                onError(NativeHapticsError.system("读取双频接口失败", errno).localizedDescription)
+                onError(NativeHapticsError.system(L10n.text("Could not read the dual-frequency interface"), errno).localizedDescription)
                 stop()
                 return
             }
@@ -197,10 +199,10 @@ enum NativeHapticsError: LocalizedError {
                current.st_mode & S_IFMT == S_IFSOCK,
                current.st_dev == boundIdentity.device, current.st_ino == boundIdentity.inode {
                 if unlinkat(directoryDescriptor, "haptics.sock", 0) != 0 {
-                    onError(NativeHapticsError.system("移除双频端点失败", errno).localizedDescription)
+                    onError(NativeHapticsError.system(L10n.text("Could not remove the dual-frequency endpoint"), errno).localizedDescription)
                 }
             } else if errno != ENOENT {
-                onError("双频端点已被替换或无法检查，未删除该路径。")
+                onError(L10n.text("The dual-frequency endpoint was replaced or could not be inspected. The path was not deleted."))
             }
         }
         boundPath = nil

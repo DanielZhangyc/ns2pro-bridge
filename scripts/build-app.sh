@@ -13,12 +13,17 @@ cp LICENSE THIRD_PARTY_NOTICES.md "$app_path/Contents/Resources/"
 cp Resources/IconSources/ATTRIBUTION.md "$app_path/Contents/Resources/ICON_ATTRIBUTION.md"
 cp Resources/Controller/ns2-pro-front.png "$app_path/Contents/Resources/"
 cp Resources/Controller/ATTRIBUTION.md "$app_path/Contents/Resources/CONTROLLER_ATTRIBUTION.md"
+for locale in en zh-Hans; do
+    mkdir -p "$app_path/Contents/Resources/$locale.lproj"
+    cp Resources/"$locale.lproj"/*.strings "$app_path/Contents/Resources/$locale.lproj/"
+    plutil -lint "$app_path/Contents/Resources/$locale.lproj/"*.strings
+done
 xcrun actool Resources/AppIcon.icon --compile "$app_path/Contents/Resources" \
     --platform macosx --minimum-deployment-target 26.0 --app-icon AppIcon \
     --output-partial-info-plist "$project_root/dist/icon-info.plist" --output-format human-readable-text
 python3 scripts/check-signing.py --prepare "$app_path"
 if [[ -n "${PROVISIONING_PROFILE:-}" ]]; then
-    codesign --force --sign "$SIGN_IDENTITY" --entitlements dist/Signing.entitlements "$app_path"
+    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" --entitlements dist/Signing.entitlements "$app_path"
 else
     codesign --force --sign - "$app_path"
 fi

@@ -41,6 +41,7 @@ THE SOFTWARE.
 #include <time.h>
 
 #define LOG(...) do { fprintf(stderr, "[NS2Transport] "); fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); } while (0)
+#define NS2Localized(key) NSLocalizedStringFromTable((key), @"Transport", nil)
 static uint64_t now_ns(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
 
 static NSString *const serviceUUID = @"AB7DE9BE-89FE-49AD-828F-118F09DF7FD0";
@@ -143,7 +144,7 @@ static NS2Bridge *bridge;
     pthread_mutex_lock(&stateMu); BOOL stopped = terminal; pthread_mutex_unlock(&stateMu);
     if (!stopped && !device && central.state == CBManagerStatePoweredOn) {
         [central scanForPeripheralsWithServices:nil options:@{CBCentralManagerScanOptionAllowDuplicatesKey:@YES}];
-        emit_status(NS2_STATUS_SCANNING, @"正在寻找配对模式的 Switch 2 Pro");
+        emit_status(NS2_STATUS_SCANNING, NS2Localized(@"Searching for a Switch 2 Pro in pairing mode"));
     }
 }
 - (void)dispose {
@@ -153,7 +154,7 @@ static NS2Bridge *bridge;
     if (device) { device.delegate = nil; [central cancelPeripheralConnection:device]; }
     central.delegate = nil;
     [self resetLink];
-    emit_status(NS2_STATUS_STOPPED, @"连接已停止");
+    emit_status(NS2_STATUS_STOPPED, NS2Localized(@"Connection stopped"));
     disposing = NO;
 }
 - (void)resetLink {
@@ -197,7 +198,7 @@ static NS2Bridge *bridge;
         LOG("【红】NS2 Pro BLE 不可用 state=%ld（检查蓝牙电源和应用蓝牙权限）", (long)manager.state);
         [self resetLink]; [retryAfter removeAllObjects];
         if (self != bridge) return;
-        emit_status(NS2_STATUS_UNAVAILABLE, [NSString stringWithFormat:@"蓝牙不可用（状态 %ld），请检查蓝牙电源和权限", (long)manager.state]);
+        emit_status(NS2_STATUS_UNAVAILABLE, [NSString stringWithFormat:NS2Localized(@"Bluetooth unavailable (state %ld). Check Bluetooth power and permission."), (long)manager.state]);
     }
 }
 - (void)centralManager:(CBCentralManager *)manager didDiscoverPeripheral:(CBPeripheral *)peripheral
@@ -231,39 +232,39 @@ static NS2Bridge *bridge;
     deadline = now_ns() + 5ull * NSEC_PER_SEC;
     LOG("NS2 Pro BLE 发现 Pro VID=057E PID=2069 id=%s RSSI=%d", peripheral.identifier.UUIDString.UTF8String, rssi.intValue);
     [manager connectPeripheral:peripheral options:nil];
-    emit_status(NS2_STATUS_CONNECTING, @"正在连接 Switch 2 Pro");
+    emit_status(NS2_STATUS_CONNECTING, NS2Localized(@"Connecting to Switch 2 Pro"));
 }
 - (void)centralManager:(CBCentralManager *)manager didConnectPeripheral:(CBPeripheral *)peripheral {
     if (self != bridge || peripheral != device) return;
     pthread_mutex_lock(&stateMu); deviceInfo.connected = 1; pthread_mutex_unlock(&stateMu);
     [peripheral discoverServices:@[[CBUUID UUIDWithString:serviceUUID]]];
-    emit_status(NS2_STATUS_INITIALIZING, @"正在读取工厂校准并初始化震动与玩家灯");
+    emit_status(NS2_STATUS_INITIALIZING, NS2Localized(@"Reading factory calibration and initializing rumble and player lights"));
 }
 - (void)centralManager:(CBCentralManager *)manager didFailToConnectPeripheral:(CBPeripheral *)peripheral error:(NSError *)error {
     if (self != bridge || peripheral != device) return;
     LOG("【红】NS2 Pro BLE 连接失败：%s", error.localizedDescription.UTF8String ?: "未提供错误详情");
     retryAfter[peripheral.identifier] = @(now_ns() + 5ull * NSEC_PER_SEC); [self resetLink];
     if (self != bridge) return;
-    emit_status(NS2_STATUS_ERROR, error.localizedDescription ?: @"连接失败"); [self scan];
+    emit_status(NS2_STATUS_ERROR, error.localizedDescription ?: NS2Localized(@"Connection failed")); [self scan];
 }
 - (void)centralManager:(CBCentralManager *)manager didDisconnectPeripheral:(CBPeripheral *)peripheral error:(NSError *)error {
     if (self != bridge || peripheral != device) return;
     LOG("%sNS2 Pro BLE 断开：%s；输入和震动状态已丢弃", error ? "【红】" : "", error.localizedDescription.UTF8String ?: "连接结束");
     [self resetLink];
     if (self != bridge) return;
-    emit_status(NS2_STATUS_DISCONNECTED, error.localizedDescription ?: @"手柄已断开"); [self scan];
+    emit_status(NS2_STATUS_DISCONNECTED, error.localizedDescription ?: NS2Localized(@"Controller disconnected")); [self scan];
 }
 - (void)peripheral:(CBPeripheral *)peripheral didDiscoverServices:(NSError *)error {
     if (self != bridge || peripheral != device) return;
-    if (error) { [self fail:[@"服务发现失败：" stringByAppendingString:error.localizedDescription]]; return; }
+    if (error) { [self fail:[NSString stringWithFormat:NS2Localized(@"Service discovery failed: %@"), error.localizedDescription]]; return; }
     for (CBService *service in peripheral.services) if (uuid_is(service.UUID, serviceUUID)) {
         [peripheral discoverCharacteristics:nil forService:service]; return;
     }
-    [self fail:@"未发现 Nintendo 服务"];
+    [self fail:NS2Localized(@"Nintendo service not found")];
 }
 - (void)peripheral:(CBPeripheral *)peripheral didDiscoverCharacteristicsForService:(CBService *)service error:(NSError *)error {
     if (self != bridge || peripheral != device || !uuid_is(service.UUID, serviceUUID)) return;
-    if (error) { [self fail:[@"特征发现失败：" stringByAppendingString:error.localizedDescription]]; return; }
+    if (error) { [self fail:[NSString stringWithFormat:NS2Localized(@"Characteristic discovery failed: %@"), error.localizedDescription]]; return; }
     for (CBCharacteristic *ch in service.characteristics) {
         if (uuid_is(ch.UUID, inputUUID)) input = ch;
         if (uuid_is(ch.UUID, powerUUID)) power = ch;
@@ -275,10 +276,10 @@ static NS2Bridge *bridge;
         !response || !(response.properties & CBCharacteristicPropertyNotify) ||
         !command || !(command.properties & CBCharacteristicPropertyWriteWithoutResponse) ||
         !vibration || !(vibration.properties & CBCharacteristicPropertyWriteWithoutResponse)) {
-        [self fail:@"缺少 Pro 专属震动特征或必需的输入/命令特征属性"]; return;
+        [self fail:NS2Localized(@"The Pro rumble characteristic or required input/command properties are missing")]; return;
     }
     if ([peripheral maximumWriteValueLengthForType:CBCharacteristicWriteWithoutResponse] < 42) {
-        [self fail:@"BLE 无响应写入长度不足 42 字节；不拆分震动 report"]; return;
+        [self fail:NS2Localized(@"BLE writes without response support fewer than 42 bytes. Rumble reports cannot be split.")]; return;
     }
     [peripheral setNotifyValue:YES forCharacteristic:response];
 }
@@ -313,11 +314,11 @@ static NS2Bridge *bridge;
     if (ch == power) {
         if (error || !ch.isNotifying) {
             preferReport09 = NO;
-            [self telemetryFailed:[NSString stringWithFormat:@"订阅 report09 失败：%@", error.localizedDescription ?: @"通知未启用"]];
+            [self telemetryFailed:[NSString stringWithFormat:NS2Localized(@"Report09 subscription failed: %@"), error.localizedDescription ?: NS2Localized(@"Notifications were not enabled")]];
         }
         return;
     }
-    if (error || !ch.isNotifying) { [self fail:[NSString stringWithFormat:@"订阅 %@ 失败：%@", ch.UUID, error.localizedDescription ?: @"通知未启用"]]; return; }
+    if (error || !ch.isNotifying) { [self fail:[NSString stringWithFormat:NS2Localized(@"Subscription to %@ failed: %@"), ch.UUID, error.localizedDescription ?: NS2Localized(@"Notifications were not enabled")]]; return; }
     if (ch == response) { subscribedResponse = YES; deadline = 0; [self tick]; }
     if (ch == input) {
         streamReady = YES; deadline = 0;
@@ -325,11 +326,11 @@ static NS2Bridge *bridge;
         // Do not overwrite the firmware connection sample; actual stop requests still use the mailbox.
         pthread_mutex_lock(&stateMu); ready = YES; deviceInfo.ready = 1; pthread_mutex_unlock(&stateMu);
         LOG("NS2 Pro BLE ready：工厂摇杆校准；report05；玩家1灯命令已确认；双侧双频42-byte震动，15ms周期；gain=%.3g（绝对力度未与主机校准）", rumbleGain);
-        emit_status(NS2_STATUS_READY, @"已连接：工厂校准与玩家 1 灯初始化完成");
+        emit_status(NS2_STATUS_READY, NS2Localized(@"Connected: factory calibration and player 1 light initialization complete"));
         if (self != bridge) return;
         if (power) {
             if (power.properties & CBCharacteristicPropertyNotify) [peripheral setNotifyValue:YES forCharacteristic:power];
-            else [self telemetryFailed:@"report09 特征不支持通知；电量与充电状态不可用"];
+            else [self telemetryFailed:NS2Localized(@"Report09 does not support notifications. Battery level and charging status are unavailable.")];
         }
         [self tick];
     }
@@ -338,16 +339,16 @@ static NS2Bridge *bridge;
     if (!awaitingAck || data.length < 8) return;
     const uint8_t *p = data.bytes, *request = pendingCommand.bytes;
     if (p[0] != request[0] || p[3] != request[3]) return;
-    if (p[1] != 1 || p[2] != 1 || (p[5] & 0x7f) != 0x78) { [self fail:@"命令响应方向/传输/ACK异常"]; return; }
+    if (p[1] != 1 || p[2] != 1 || (p[5] & 0x7f) != 0x78) { [self fail:NS2Localized(@"Invalid command response direction, transport or acknowledgement")]; return; }
     if (step == 1 || step == 2) {
         if (data.length < 80 || le32(p + 8) != 0x40 || le32(p + 12) != le32(request + 12)) {
-            [self fail:@"工厂校准响应长度或读取地址不匹配"]; return;
+            [self fail:NS2Localized(@"The factory calibration response length or read address does not match")]; return;
         }
         ns2_calibration *cal = &calibration[step - 1]; const uint8_t *record = p + 16 + 0x28;
         unpack12(record, cal->center); unpack12(record + 3, cal->above); unpack12(record + 6, cal->below);
         for (unsigned axis = 0; axis < 2; axis++) if (!cal->center[axis] || !cal->above[axis] || !cal->below[axis] ||
             cal->center[axis] + cal->above[axis] > 4095 || cal->below[axis] > cal->center[axis]) {
-            [self fail:@"工厂摇杆校准无效；不使用猜测的中心/量程"]; return;
+            [self fail:NS2Localized(@"Factory stick calibration is invalid. Estimated centers and ranges are not used.")]; return;
         }
         LOG("NS2 Pro BLE calibration side=%lu center=%u,%u above=%u,%u below=%u,%u", (unsigned long)step - 1,
             cal->center[0], cal->center[1], cal->above[0], cal->above[1], cal->below[0], cal->below[1]);
@@ -362,34 +363,34 @@ static NS2Bridge *bridge;
     // 开启 report09 后部分固件只持续发送此通道；必须同时解析它的真实输入布局。
     // Some firmware streams only report09 after subscription, so its actual input layout must also be decoded.
     if (ch == power) {
-        if (error) { preferReport09 = NO; [self telemetryFailed:[@"report09 通知读取失败：" stringByAppendingString:error.localizedDescription]]; return; }
+        if (error) { preferReport09 = NO; [self telemetryFailed:[NSString stringWithFormat:NS2Localized(@"Report09 notification read failed: %@"), error.localizedDescription]]; return; }
         NSData *powerData = ch.value;
         pthread_mutex_lock(&stateMu);
         int valid = ns2_decode_report09_telemetry(powerData.bytes, powerData.length, &deviceInfo);
         if (valid) memset(deviceInfo.telemetry_error, 0, sizeof deviceInfo.telemetry_error);
         pthread_mutex_unlock(&stateMu);
-        if (!valid) [self telemetryFailed:@"report09 长度不足 63 字节或电量等级不在 0..9"];
+        if (!valid) [self telemetryFailed:NS2Localized(@"Report09 is shorter than 63 bytes or its battery level is outside 0..9")];
         if (streamReady) [self publishInput:powerData report:9];
         return;
     }
-    if (error) { [self fail:[@"通知读取失败：" stringByAppendingString:error.localizedDescription]]; return; }
+    if (error) { [self fail:[NSString stringWithFormat:NS2Localized(@"Notification read failed: %@"), error.localizedDescription]]; return; }
     NSData *data = ch.value;
-    if (!data) { [self fail:@"通知数据为空"]; return; }
+    if (!data) { [self fail:NS2Localized(@"Notification data is empty")]; return; }
     if (ch == response) { [self receiveAck:data]; return; }
     if (ch != input || !streamReady) return;
-    if (data.length < 63) { [self fail:[NSString stringWithFormat:@"report05长度%lu不足63字节", (unsigned long)data.length]]; return; }
+    if (data.length < 63) { [self fail:[NSString stringWithFormat:NS2Localized(@"Report05 has %lu bytes; at least 63 are required"), (unsigned long)data.length]]; return; }
     pthread_mutex_lock(&stateMu);
     int valid = ns2_decode_report05_telemetry(data.bytes, data.length, &deviceInfo);
     pthread_mutex_unlock(&stateMu);
     if (!valid) {
-        [self fail:@"report05 电池字段解码失败"]; return;
+        [self fail:NS2Localized(@"Report05 battery fields could not be decoded")]; return;
     }
     if (!preferReport09) [self publishInput:data report:5];
 }
 - (void)publishInput:(NSData *)data report:(unsigned)reportID {
     ns2_raw_input decoded;
     if (!ns2_decode_input_report(reportID, data.bytes, data.length, &decoded)) {
-        [self fail:[NSString stringWithFormat:@"report%02x 输入长度%lu不足63字节", reportID, (unsigned long)data.length]]; return;
+        [self fail:[NSString stringWithFormat:NS2Localized(@"Report%02x input has %lu bytes; at least 63 are required"), reportID, (unsigned long)data.length]]; return;
     }
     if (reportID == 9 && !preferReport09) {
         preferReport09 = YES;
@@ -413,7 +414,7 @@ static NS2Bridge *bridge;
     if (self != bridge) return;
     uint64_t now = now_ns();
     if (sessionFailed) return;
-    if (deadline && now >= deadline) { [self fail:awaitingAck ? @"初始化命令 ACK 超时" : @"连接/发现/订阅超时"]; return; }
+    if (deadline && now >= deadline) { [self fail:awaitingAck ? NS2Localized(@"Initialization command acknowledgement timed out") : NS2Localized(@"Connection, discovery or subscription timed out")]; return; }
     if (!device || device.state != CBPeripheralStateConnected) return;
     pthread_mutex_lock(&stateMu); BOOL stopped = terminal; pthread_mutex_unlock(&stateMu);
     if (!streamReady) {

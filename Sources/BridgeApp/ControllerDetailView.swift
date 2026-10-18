@@ -4,7 +4,7 @@ import AppKit
 struct ControllerWindowButton: View {
     @Environment(\.openWindow) private var openWindow
     var body: some View {
-        Button("显示手柄") {
+        Button("Show Controller") {
             openWindow(id: "controller")
             NSApp.activate(ignoringOtherApps: true)
         }
@@ -14,45 +14,34 @@ struct ControllerWindowButton: View {
 struct ControllerDetailView: View {
     @ObservedObject var model: BridgeModel
     @State private var detailsExpanded = false
-    private let buttonNames = ["A", "B", "X", "Y", "左摇杆", "右摇杆", "L", "R", "ZL", "ZR", "+", "−", "←", "↑", "→", "↓", "Home", "截图", "C", "GL", "GR"]
 
     var body: some View {
         Form {
             Section {
-                HStack {
-                    Spacer(minLength: 0)
-                    ControllerInputDiagram(buttons: model.buttons, axes: model.axes)
-                    Spacer(minLength: 0)
-                }
+                ControllerLiveDiagram(input: model.input)
                 LabeledContent("Nintendo Switch 2 Pro", value: model.status)
                 if model.ready {
-                    LabeledContent("按下的按键") {
-                        let names = buttonNames.enumerated().compactMap { index, name in
-                            model.buttons & (UInt64(1) << index) != 0 ? name : nil
-                        }
-                        Text(names.isEmpty ? "无" : names.joined(separator: "、"))
-                            .foregroundStyle(.secondary).multilineTextAlignment(.trailing)
-                    }
+                    ControllerPressedButtons(input: model.input)
                 }
             } footer: {
                 if !model.ready { Text(model.detail) }
             }
             if model.batteryLevel != nil || model.charging != nil {
-                Section("电池") {
+                Section("Battery") {
                     if let level = model.batteryLevel {
-                        LabeledContent("电量等级") {
+                        LabeledContent("Battery Level") {
                             HStack(spacing: 8) {
                                 ProgressView(value: Double(level), total: 9).frame(width: 90)
-                                    .accessibilityLabel("电量等级").accessibilityValue("\(level) / 9")
-                                Text("\(level) / 9").monospacedDigit()
+                                    .accessibilityLabel("Battery Level").accessibilityValue(L10n.format("%lld / 9", level))
+                                Text(L10n.format("%lld / 9", level)).monospacedDigit()
                             }
                         }
                     }
                     if let charging = model.charging {
-                        LabeledContent("充电状态", value: charging ? "正在充电" : "未在充电")
+                        LabeledContent("Charging Status", value: L10n.text(charging ? "Charging" : "Not charging"))
                     }
                     if let externalPower = model.externalPower {
-                        LabeledContent("电源", value: externalPower ? "外部供电" : "电池")
+                        LabeledContent("Power Source", value: L10n.text(externalPower ? "External power" : "Battery"))
                     }
                 }
             }
@@ -63,37 +52,37 @@ struct ControllerDetailView: View {
                     HStack {
                         Image(systemName: detailsExpanded ? "chevron.down" : "chevron.right")
                             .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                        Text("设备与输入详情")
+                        Text("Device and Input Details")
                         Spacer()
                     }
                     .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityValue(detailsExpanded ? "已展开" : "已收起")
+                .accessibilityValue(L10n.text(detailsExpanded ? "Expanded" : "Collapsed"))
                 if detailsExpanded {
                     if let millivolts = model.batteryMillivolts {
-                        LabeledContent("电池电压", value: String(format: "%.3f V", Double(millivolts) / 1000)).monospacedDigit()
+                        LabeledContent("Battery Voltage", value: L10n.format("%.3f V", Double(millivolts) / 1000)).monospacedDigit()
                     }
                     if let signal = model.signalStrength {
-                        LabeledContent("发现时信号", value: "\(signal) dBm")
+                        LabeledContent("Signal at Discovery", value: L10n.format("%lld dBm", signal))
                     }
                     if model.ready {
-                        LabeledContent("名称", value: model.deviceName)
-                        LabeledContent("连接方式", value: "Bluetooth LE")
-                        LabeledContent("左摇杆", value: String(format: "%+.2f, %+.2f", model.axes[0], model.axes[1])).monospacedDigit()
-                        LabeledContent("右摇杆", value: String(format: "%+.2f, %+.2f", model.axes[2], model.axes[3])).monospacedDigit()
-                        LabeledContent("标识符") {
+                        LabeledContent("Name", value: model.deviceName)
+                        LabeledContent("Connection", value: L10n.text("Bluetooth LE"))
+                        ControllerStickValues(input: model.input)
+                        LabeledContent("Identifier") {
                             Text(model.deviceIdentifier).font(.caption.monospaced()).textSelection(.enabled)
                         }
                     }
-                    if model.running { LabeledContent("系统手柄", value: "Xbox Wireless Controller") }
+                    if model.running { LabeledContent("System Controller", value: L10n.text("Xbox Wireless Controller")) }
                 }
             } footer: {
                 if !model.telemetryError.isEmpty { Text(model.telemetryError) }
             }
         }
         .formStyle(.grouped)
+        .background(ControllerInputVisibility(input: model.input).frame(width: 0, height: 0))
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -110,16 +99,50 @@ struct ControllerDetailView: View {
                         }
                     }.frame(width: 20, height: 20)
                 }
-                .accessibilityLabel(model.running ? (model.ready ? "断开手柄" : "取消连接") : "连接手柄")
-                .help(model.running ? (model.ready ? "断开手柄" : "取消连接") : "连接手柄")
+                .accessibilityLabel(L10n.text(model.running ? (model.ready ? "Disconnect Controller" : "Cancel Connection") : "Connect Controller"))
+                .help(L10n.text(model.running ? (model.ready ? "Disconnect Controller" : "Cancel Connection") : "Connect Controller"))
                 .disabled(model.busy || (!model.running && !model.provisioned))
             }
             ToolbarItem(placement: .primaryAction) {
                 SettingsLink { Image(systemName: "gearshape").frame(width: 20, height: 20) }
-                    .accessibilityLabel("设置").help("设置")
+                    .accessibilityLabel("Settings").help("Settings")
             }
         }
         .frame(minWidth: 480, minHeight: 570)
+    }
+}
+
+private struct ControllerLiveDiagram: View {
+    @ObservedObject var input: ControllerInputModel
+    var body: some View {
+        HStack {
+            Spacer(minLength: 0)
+            ControllerInputDiagram(buttons: input.snapshot.buttons, axes: input.snapshot.axes)
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+private struct ControllerPressedButtons: View {
+    @ObservedObject var input: ControllerInputModel
+    private static let buttonNames = ["A", "B", "X", "Y", "Left stick", "Right stick", "L", "R", "ZL", "ZR", "+", "−", "←", "↑", "→", "↓", "Home", "Capture", "C", "GL", "GR"].map { L10n.text($0) }
+    var body: some View {
+        LabeledContent("Pressed Buttons") {
+            let names = Self.buttonNames.enumerated().compactMap { index, name in
+                input.snapshot.buttons & (UInt64(1) << index) != 0 ? name : nil
+            }
+            Text(names.isEmpty ? L10n.text("None") : names.joined(separator: L10n.text(", ")))
+                .foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+        }
+    }
+}
+
+private struct ControllerStickValues: View {
+    @ObservedObject var input: ControllerInputModel
+    var body: some View {
+        let axes = input.snapshot.axes
+        LabeledContent("Left Stick", value: L10n.format("%+.2f, %+.2f", axes[0], axes[1])).monospacedDigit()
+        LabeledContent("Right Stick", value: L10n.format("%+.2f, %+.2f", axes[2], axes[3])).monospacedDigit()
     }
 }
 
@@ -128,22 +151,22 @@ struct BridgeSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Picker("震动力度", selection: $model.gain) {
-                    Text("1 倍").tag(1.0)
-                    Text("2 倍（默认）").tag(2.0)
-                    Text("3 倍").tag(3.0)
+                Picker("Rumble Strength", selection: $model.gain) {
+                    Text("1×").tag(1.0)
+                    Text("2× (Default)").tag(2.0)
+                    Text("3×").tag(3.0)
                 }.disabled(model.running || model.busy)
-                LabeledContent("双侧震动") { Button("测试") { model.testRumble() }.disabled(!model.ready) }
-            } footer: { Text("测试持续 0.3 秒。修改力度前，请先断开手柄。") }
+                LabeledContent("Both Motors") { Button("Test") { model.testRumble() }.disabled(!model.ready) }
+            } footer: { Text("The test lasts 0.3 seconds. Disconnect the controller before changing the strength.") }
             Section {
-                Toggle("允许本机应用发送双频震动", isOn: $model.nativeEnabled).disabled(model.running || model.busy)
-            } header: { Text("双频接口") }
-            footer: { Text("普通游戏提供左右强度。双频效果需要应用主动接入。修改此设置前，请先断开手柄。") }
+                Toggle("Allow local apps to send dual-frequency rumble", isOn: $model.nativeEnabled).disabled(model.running || model.busy)
+            } header: { Text("Dual-Frequency Interface") }
+            footer: { Text("Standard games provide left and right intensity. Dual-frequency effects require app integration. Disconnect the controller before changing this setting.") }
             Section {
-                LabeledContent("A / B / X / Y", value: "Xbox B / A / Y / X")
-                LabeledContent("Home / 截图", value: "Guide / Share")
-            } header: { Text("系统映射") }
-            footer: { Text("按物理位置映射。C、GL、GR 可在主页查看，但暂不映射到系统手柄。") }
+                LabeledContent("A / B / X / Y", value: L10n.text("Xbox B / A / Y / X"))
+                LabeledContent("Home / Capture", value: L10n.text("Guide / Share"))
+            } header: { Text("System Mapping") }
+            footer: { Text("Buttons map by physical position. C, GL, and GR are visible in the main window but are not mapped to the system controller.") }
         }
         .formStyle(.grouped)
         .frame(width: 470, height: 420)
