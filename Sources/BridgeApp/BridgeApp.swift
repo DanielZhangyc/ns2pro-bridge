@@ -33,6 +33,20 @@ private let statusCallback: ns2_status_callback = { status, message, context in
     @Published var busy = false
     @Published var gain = 2.0
     @Published var nativeEnabled = true
+    @Published private(set) var ready = false
+    @Published private(set) var deviceName = "Nintendo Switch 2 Pro"
+    @Published private(set) var deviceIdentifier = "未连接"
+    @Published private(set) var batteryMillivolts: Int?
+    @Published private(set) var batteryLevel: Int?
+    @Published private(set) var externalPower: Bool?
+    @Published private(set) var telemetryError = ""
+    @Published private(set) var charging: Bool?
+    @Published private(set) var signalStrength: Int?
+    @Published private(set) var buttons: UInt64 = 0
+    @Published private(set) var axes = [Double](repeating: 0, count: 4)
+    @Published private(set) var connectedSince: Date?
+    private var lastInputDisplay = 0.0
+    private var lastInfoDisplay = 0.0
     let provisioned = Bundle.main.object(forInfoDictionaryKey: "NS2VirtualHIDProvisioned") as? Bool == true
     private init() {
         if !provisioned {
@@ -42,7 +56,6 @@ private let statusCallback: ns2_status_callback = { status, message, context in
     }
     private var session: UInt64 = 0
     private var callbackContext: CallbackContext?
-    private var ready = false
     private var timer: Timer?
     private var nativeUntil: ContinuousClock.Instant?
     private var rumbleUntil: ContinuousClock.Instant?
@@ -98,6 +111,7 @@ private let statusCallback: ns2_status_callback = { status, message, context in
         busy = true
         session &+= 1
         ready = false
+        clearDeviceInfo()
         running = false
         timer?.invalidate()
         timer = nil
@@ -119,6 +133,8 @@ private let statusCallback: ns2_status_callback = { status, message, context in
         let wasReady = ready
         ready = value == NS2_STATUS_READY.rawValue
         if ready && !wasReady {
+            connectedSince = Date()
+            refreshDeviceInfo()
             Task {
                 guard session == self.session, self.ready else { return }
                 await virtual.setRumbleSuppressed(false)
@@ -134,6 +150,7 @@ private let statusCallback: ns2_status_callback = { status, message, context in
         default: break
         }
         if wasReady && !ready {
+            clearDeviceInfo()
             nativeUntil = nil
             rumbleUntil = nil
             rumbleRevision &+= 1
@@ -148,6 +165,12 @@ private let statusCallback: ns2_status_callback = { status, message, context in
 
     fileprivate func publish(session: UInt64, buttons: UInt64, lx: Int32, ly: Int32, rx: Int32, ry: Int32) async {
         guard session == self.session, ready else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if buttons != self.buttons || now - lastInputDisplay >= 1.0 / 30 {
+            self.buttons = buttons
+            axes = [lx, ly, rx, ry].map { Double($0) / 32767 }
+            lastInputDisplay = now
+        }
         do { try await virtual.publish(buttons: buttons, lx: lx, ly: ly, rx: rx, ry: ry) }
         catch { if session == self.session { await outputFailed(error) } }
     }
@@ -210,6 +233,11 @@ private let statusCallback: ns2_status_callback = { status, message, context in
     }
 
     private func expireRumble() {
+        let now = ProcessInfo.processInfo.systemUptime
+        if now - lastInfoDisplay >= 0.25 {
+            refreshDeviceInfo()
+            lastInfoDisplay = now
+        }
         if let rumbleUntil, ContinuousClock.now >= rumbleUntil {
             self.rumbleUntil = nil
             nativeUntil = nil
@@ -221,6 +249,47 @@ private let statusCallback: ns2_status_callback = { status, message, context in
             }
         }
     }
+
+    private func refreshDeviceInfo() {
+        var info = ns2_info()
+        ns2_get_info(&info)
+        deviceName = withUnsafeBytes(of: info.name) { raw in
+            String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
+        }
+        if deviceName.isEmpty { deviceName = "Nintendo Switch 2 Pro" }
+        deviceIdentifier = withUnsafeBytes(of: info.identifier) { raw in
+            String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
+        }
+        if deviceIdentifier.isEmpty { deviceIdentifier = "未连接" }
+        batteryMillivolts = info.battery_known != 0 ? Int(info.battery_millivolts) : nil
+        batteryLevel = info.battery_level_known != 0 ? Int(info.battery_level) : nil
+        externalPower = info.external_power_known != 0 ? info.external_power != 0 : nil
+        telemetryError = withUnsafeBytes(of: info.telemetry_error) { raw in
+            String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
+        }
+        charging = info.charging_known != 0 ? info.charging != 0 : nil
+        signalStrength = info.rssi_known != 0 ? Int(info.rssi_dbm) : nil
+    }
+
+    private func clearDeviceInfo() {
+        batteryMillivolts = nil
+        batteryLevel = nil
+        externalPower = nil
+        telemetryError = ""
+        charging = nil
+        signalStrength = nil
+        connectedSince = nil
+        buttons = 0
+        axes = [Double](repeating: 0, count: 4)
+        deviceIdentifier = "未连接"
+    }
+
+    func testRumble() {
+        guard ready else { return }
+        let band = HapticBand(lowAmplitude: 0.12, lowFrequency: 160, highAmplitude: 0.08, highFrequency: 320)
+        nativeRumble(HapticFrame(version: 1, durationMilliseconds: 300, left: band, right: band))
+    }
+
 }
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -244,21 +313,24 @@ private let statusCallback: ns2_status_callback = { status, message, context in
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var model = BridgeModel.shared
     var body: some Scene {
+        Window("NS2 Pro Bridge", id: "controller") {
+            ControllerDetailView(model: model)
+        }
+        .defaultSize(width: 560, height: 650)
+        .windowResizability(.contentMinSize)
+        Settings { BridgeSettingsView(model: model) }
         MenuBarExtra("NS2 Pro Bridge", systemImage: model.running ? "gamecontroller.fill" : "gamecontroller") {
+            ControllerWindowButton()
+            Divider()
             Text(model.status).font(.headline)
             Text(model.detail).font(.caption)
             Divider()
             if model.running {
                 Button("断开手柄") { Task { await model.disconnect() } }.disabled(model.busy)
             } else {
-                Picker("震动力度", selection: $model.gain) {
-                    Text("1 倍").tag(1.0)
-                    Text("2 倍（推荐）").tag(2.0)
-                    Text("3 倍").tag(3.0)
-                }.disabled(model.busy)
-                Toggle("启用本机双频接口", isOn: $model.nativeEnabled).disabled(model.busy)
                 Button("连接手柄") { Task { await model.connect() } }.disabled(model.busy || !model.provisioned)
             }
+            SettingsLink { Text("设置…") }
             Divider()
             Button("退出 NS2 Pro Bridge") { NSApp.terminate(nil) }.keyboardShortcut("q")
         }

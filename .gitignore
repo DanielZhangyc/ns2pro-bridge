@@ -3,3 +3,6 @@ dist/
 .DS_Store
 .swiftpm/
 __pycache__/
+*.provisionprofile
+*.mobileprovision
+*.p12

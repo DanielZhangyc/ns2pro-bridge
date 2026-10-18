@@ -1,0 +1,25 @@
+{
+  "image": "ns2-pro-front.png",
+  "width": 975,
+  "height": 975,
+  "origin": "top-left",
+  "coordinateMethod": "visually measured pixel centers divided by 975",
+  "hotspots": {
+    "A": { "bit": 0, "pixel": [786, 365], "normalized": [0.806154, 0.374359] },
+    "B": { "bit": 1, "pixel": [715, 426], "normalized": [0.733333, 0.436923] },
+    "X": { "bit": 2, "pixel": [715, 304], "normalized": [0.733333, 0.311795] },
+    "Y": { "bit": 3, "pixel": [644, 366], "normalized": [0.660513, 0.375385] },
+    "leftStick": { "bit": 4, "pixel": [242, 364], "normalized": [0.248205, 0.373333] },
+    "rightStick": { "bit": 5, "pixel": [592, 489], "normalized": [0.607179, 0.501538] },
+    "plus": { "bit": 10, "pixel": [594, 296], "normalized": [0.609231, 0.303590] },
+    "minus": { "bit": 11, "pixel": [382, 296], "normalized": [0.391795, 0.303590] },
+    "dpadLeft": { "bit": 12, "pixel": [315, 489], "normalized": [0.323077, 0.501538] },
+    "dpadUp": { "bit": 13, "pixel": [359, 447], "normalized": [0.368205, 0.458462] },
+    "dpadRight": { "bit": 14, "pixel": [403, 489], "normalized": [0.413333, 0.501538] },
+    "dpadDown": { "bit": 15, "pixel": [359, 533], "normalized": [0.368205, 0.546667] },
+    "home": { "bit": 16, "pixel": [541, 365], "normalized": [0.554872, 0.374359] },
+    "capture": { "bit": 17, "pixel": [434, 365], "normalized": [0.445128, 0.374359] },
+    "C": { "bit": 18, "pixel": [487, 555], "normalized": [0.499487, 0.569231] }
+  },
+  "notVisibleInFront": ["L", "R", "ZL", "ZR", "GL", "GR"]
+}

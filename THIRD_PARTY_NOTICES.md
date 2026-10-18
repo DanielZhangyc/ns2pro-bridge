@@ -1,6 +1,6 @@
 # Third-party notices
 
-This project is MIT licensed. The complete MIT grant and disclaimer are in
+The project code is MIT licensed. The complete MIT grant and disclaimer are in
 [LICENSE](LICENSE) and included in packaged apps.
 
 - NS2 transport and dual-band codec extracted from
@@ -19,6 +19,14 @@ This project is MIT licensed. The complete MIT grant and disclaimer are in
   [switch2_controller_research](https://github.com/ndeadly/switch2_controller_research).
   Xbox rumble mask/timing facts were cross-checked with xpadneo and SDL;
   their implementation code was not copied.
+- App icon controller outline adapted from Lucide `gamepad-2`, ISC licensed.
+  The editable Apple Icon Composer project and full attribution are in
+  [Resources/IconSources/ATTRIBUTION.md](Resources/IconSources/ATTRIBUTION.md).
+- The controller photograph, `Resources/Controller/ns2-pro-front.png`, is an
+  unmodified Nintendo product image, copyright Nintendo. It is **not covered by
+  this project's MIT license**. Its official source, download details and rights
+  notice are in [Resources/Controller/ATTRIBUTION.md](Resources/Controller/ATTRIBUTION.md).
+  Public availability does not grant an open-content license or imply endorsement.
 
 Nintendo, Switch, Xbox and Microsoft are trademarks of their respective owners.
 The virtual device uses Xbox-compatible identifiers for host driver recognition;

@@ -5,11 +5,13 @@
 <key>CFBundleIdentifier</key><string>dev.danielzhangyc.ns2pro-bridge</string>
 <key>CFBundleName</key><string>NS2 Pro Bridge</string>
 <key>CFBundleDisplayName</key><string>NS2 Pro Bridge</string>
+<key>CFBundleIconFile</key><string>AppIcon</string>
+<key>CFBundleIconName</key><string>AppIcon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>0.1.0</string>
 <key>CFBundleVersion</key><string>1</string>
 <key>LSMinimumSystemVersion</key><string>26.0</string>
-<key>LSUIElement</key><true/>
+<key>LSUIElement</key><false/>
 <key>NSBluetoothAlwaysUsageDescription</key><string>连接你的 Nintendo Switch 2 Pro 手柄，接收按键并发送震动。</string>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
