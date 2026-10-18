@@ -25,8 +25,8 @@ flowchart LR
 Each actuator receives two independent amplitude/frequency pairs, conventionally named LF and HF. Both frequency fields use the same logarithmic conversion in [NS2Rumble.c](Sources/NS2Transport/NS2Rumble.c):
 
 $$
-f_c=\operatorname{clamp}(f,40,1252),\qquad
-q=\operatorname{round}\left(1+96\log_2\frac{f_c}{10}\right),\qquad
+f_c=\mathrm{clamp}(f,40,1252),\qquad
+q=\mathrm{round}\left(1+96\log_2\frac{f_c}{10}\right),\qquad
 \hat f(q)=10\cdot2^{(q-1)/96}\ \mathrm{Hz}.
 $$
 

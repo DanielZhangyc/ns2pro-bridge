@@ -25,8 +25,8 @@ flowchart LR
 每侧执行器接收两组独立的幅度与频率参数，分别记作 LF、HF。两组频率字段使用相同的对数换算，由 [NS2Rumble.c](Sources/NS2Transport/NS2Rumble.c) 实现：
 
 $$
-f_c=\operatorname{clamp}(f,40,1252),\qquad
-q=\operatorname{round}\left(1+96\log_2\frac{f_c}{10}\right),\qquad
+f_c=\mathrm{clamp}(f,40,1252),\qquad
+q=\mathrm{round}\left(1+96\log_2\frac{f_c}{10}\right),\qquad
 \hat f(q)=10\cdot2^{(q-1)/96}\ \mathrm{Hz}.
 $$
 
