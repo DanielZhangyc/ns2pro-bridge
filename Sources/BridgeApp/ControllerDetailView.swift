@@ -5,6 +5,7 @@ struct ControllerWindowButton: View {
     @Environment(\.openWindow) private var openWindow
     var body: some View {
         Button("Show Controller") {
+            NSApp.setActivationPolicy(.regular)
             openWindow(id: "controller")
             NSApp.activate(ignoringOtherApps: true)
         }

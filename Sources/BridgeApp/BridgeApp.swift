@@ -293,7 +293,31 @@ private let statusCallback: ns2_status_callback = { status, message, context in
     private var mayQuit = false
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(sleep), name: NSWorkspace.willSleepNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(windowWillClose), name: NSWindow.willCloseNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(windowDidBecomeKey), name: NSWindow.didBecomeKeyNotification, object: nil)
     }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    private func isAppWindow(_ window: NSWindow) -> Bool {
+        window.styleMask.contains(.titled) && !(window is NSPanel)
+    }
+
+    @objc private func windowWillClose(_ notification: Notification) {
+        guard let closing = notification.object as? NSWindow, isAppWindow(closing), !mayQuit else { return }
+        // 菜单栏窗口不参与判断；关闭最后一个普通窗口只隐藏 Dock，不停止手柄服务。
+        // Ignore menu-bar panels; closing the last normal window hides the Dock icon without stopping controller services.
+        let remaining = NSApp.windows.contains {
+            $0 !== closing && isAppWindow($0) && ($0.isVisible || $0.isMiniaturized)
+        }
+        if !remaining { NSApp.setActivationPolicy(.accessory) }
+    }
+
+    @objc private func windowDidBecomeKey(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, isAppWindow(window),
+              NSApp.activationPolicy() != .regular else { return }
+        NSApp.setActivationPolicy(.regular)
+    }
+
     @objc private func sleep() { Task { await BridgeModel.shared.disconnect() } }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if mayQuit { return .terminateNow }
