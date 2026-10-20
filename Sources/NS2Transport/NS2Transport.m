@@ -63,8 +63,10 @@ static dispatch_group_t shutdownGroup;
 static char queueKey;
 static float rumbleGain = 2;
 static ns2_info deviceInfo;
+static ns2_motion latestMotion;
 static ns2_state_callback stateCallback;
 static ns2_status_callback statusCallback;
+static ns2_motion_callback motionCallback;
 static void *callbackContext;
 static BOOL disposing;
 static void emit_state(ns2_state value) { if (stateCallback) stateCallback(&value, callbackContext); }
@@ -90,6 +92,8 @@ static void reset_state(void) {
     // 断线后立即丢弃旧物理连接的输入和震动数值。
     // Immediately discard old physical input and rumble values after disconnection.
     ready = NO; deviceInfo.ready = 0; stopMask = 0; dirty = NO;
+    memset(&latestMotion, 0, sizeof latestMotion);
+    ns2_decode_report09_accessories(NULL, 0, &deviceInfo);
     memset(wanted, 0, sizeof wanted); memset(actual, 0, sizeof actual);
     pthread_mutex_unlock(&stateMu);
 }
@@ -187,6 +191,7 @@ static NS2Bridge *bridge;
     LOG("【红】NS2 Pro BLE 电量遥测：%s", reason.UTF8String);
     pthread_mutex_lock(&stateMu);
     ns2_decode_report09_telemetry(NULL, 0, &deviceInfo);
+    ns2_decode_report09_accessories(NULL, 0, &deviceInfo);
     snprintf(deviceInfo.telemetry_error, sizeof deviceInfo.telemetry_error, "%s", reason.UTF8String);
     pthread_mutex_unlock(&stateMu);
 }
@@ -291,12 +296,12 @@ static NS2Bridge *bridge;
             bytes[0] = 2; bytes[3] = 4; bytes[5] = 8; length = 16;
             bytes[8] = 0x40; bytes[9] = 0x7e; bytes[12] = step == 1 ? 0x80 : 0xc0; bytes[13] = 0x30; bytes[14] = 1; break;
         case 3: bytes[0] = 3; bytes[3] = 0x0a; bytes[5] = 4; bytes[8] = 5; length = 12; break;
-        case 4: bytes[0] = 0x0c; bytes[3] = 2; bytes[5] = 4; bytes[8] = 0x2b; length = 12; break;
+        case 4: bytes[0] = 0x0c; bytes[3] = 2; bytes[5] = 4; bytes[8] = motionCallback ? 0x2f : 0x2b; length = 12; break;
         case 5: {
             bytes[0] = 0x0a; bytes[3] = 8; bytes[5] = 20; length = 28;
             bytes[8] = 1; memset(bytes + 9, 0xff, 8); bytes[17] = 0x35; bytes[19] = 0x46; break;
         }
-        case 6: bytes[0] = 0x0c; bytes[3] = 4; bytes[5] = 4; bytes[8] = 0x2b; length = 12; break;
+        case 6: bytes[0] = 0x0c; bytes[3] = 4; bytes[5] = 4; bytes[8] = motionCallback ? 0x2f : 0x2b; length = 12; break;
         // 玩家1常亮；采用已公开且在冷启动有效的 09/07 bitmask 命令。
         // Player1 steady light, using the documented 09/07 bitmask command that works on cold start.
         case 7: bytes[0] = 9; bytes[3] = 7; bytes[5] = 8; bytes[8] = 1; length = 16; break;
@@ -328,7 +333,9 @@ static NS2Bridge *bridge;
         LOG("NS2 Pro BLE ready：工厂摇杆校准；report05；玩家1灯命令已确认；双侧双频42-byte震动，15ms周期；gain=%.3g（绝对力度未与主机校准）", rumbleGain);
         emit_status(NS2_STATUS_READY, NS2Localized(@"Connected: factory calibration and player 1 light initialization complete"));
         if (self != bridge) return;
-        if (power) {
+        // report09 订阅可能切断 report05；IMU 模式只用公开可解码的 report05。
+        // Subscribing to report09 may cut off report05; IMU mode uses only the publicly decoded report05.
+        if (power && !motionCallback) {
             if (power.properties & CBCharacteristicPropertyNotify) [peripheral setNotifyValue:YES forCharacteristic:power];
             else [self telemetryFailed:NS2Localized(@"Report09 does not support notifications. Battery level and charging status are unavailable.")];
         }
@@ -367,6 +374,7 @@ static NS2Bridge *bridge;
         NSData *powerData = ch.value;
         pthread_mutex_lock(&stateMu);
         int valid = ns2_decode_report09_telemetry(powerData.bytes, powerData.length, &deviceInfo);
+        ns2_decode_report09_accessories(powerData.bytes, powerData.length, &deviceInfo);
         if (valid) memset(deviceInfo.telemetry_error, 0, sizeof deviceInfo.telemetry_error);
         pthread_mutex_unlock(&stateMu);
         if (!valid) [self telemetryFailed:NS2Localized(@"Report09 is shorter than 63 bytes or its battery level is outside 0..9")];
@@ -381,7 +389,18 @@ static NS2Bridge *bridge;
     if (data.length < 63) { [self fail:[NSString stringWithFormat:NS2Localized(@"Report05 has %lu bytes; at least 63 are required"), (unsigned long)data.length]]; return; }
     pthread_mutex_lock(&stateMu);
     int valid = ns2_decode_report05_telemetry(data.bytes, data.length, &deviceInfo);
+    ns2_decode_report05_accessories(data.bytes, data.length, &deviceInfo);
+    ns2_motion motion = {0};
+    BOOL publishMotion = motionCallback && active && ready && !terminal;
+    if (publishMotion && ns2_decode_report05_motion(data.bytes, data.length, &motion)) {
+        // 部分固件的设备时钟不可靠；对外用接收时的单调时钟，设备值保留用于诊断。
+        // Some firmware has unreliable device timestamps; export monotonic arrival time and retain the device value for diagnostics.
+        motion.host_timestamp_us = now_ns() / 1000;
+        latestMotion = motion;
+    }
     pthread_mutex_unlock(&stateMu);
+    if (publishMotion && motion.known) motionCallback(&motion, callbackContext);
+    if (self != bridge) return;
     if (!valid) {
         [self fail:NS2Localized(@"Report05 battery fields could not be decoded")]; return;
     }
@@ -463,6 +482,9 @@ static NS2Bridge *bridge;
 @end
 
 int ns2_start(ns2_state_callback state, ns2_status_callback status, void *context) {
+    return ns2_start_with_motion(state, status, NULL, context);
+}
+int ns2_start_with_motion(ns2_state_callback state, ns2_status_callback status, ns2_motion_callback motion, void *context) {
     __block int accepted = 0;
     on_queue(^{
         if (bridge) return;
@@ -476,10 +498,11 @@ int ns2_start(ns2_state_callback state, ns2_status_callback status, void *contex
             }
             gainValue = (float)parsed;
         }
-        stateCallback = state; statusCallback = status; callbackContext = context;
+        stateCallback = state; statusCallback = status; motionCallback = motion; callbackContext = context;
         pthread_mutex_lock(&stateMu);
         terminal = NO; active = YES; ready = NO; dirty = NO; shutdownSent = NO; stopMask = 0;
         memset(&deviceInfo, 0, sizeof deviceInfo);
+        memset(&latestMotion, 0, sizeof latestMotion);
         memset(wanted, 0, sizeof wanted); memset(actual, 0, sizeof actual); rumbleGain = gainValue;
         pthread_mutex_unlock(&stateMu);
         shutdownGroup = dispatch_group_create();
@@ -495,6 +518,7 @@ void ns2_set_active(int enabled) {
         BOOL changed = active != next;
         active = next;
         if (changed) {
+            memset(&latestMotion, 0, sizeof latestMotion);
             memset(wanted, 0, sizeof wanted); memset(actual, 0, sizeof actual);
             stopMask = 3; dirty = YES;
         }
@@ -543,6 +567,14 @@ void ns2_get_info(ns2_info *out) {
     if (!out) return;
     pthread_mutex_lock(&stateMu); *out = deviceInfo; pthread_mutex_unlock(&stateMu);
 }
+void ns2_get_motion(ns2_motion *out) {
+    if (!out) return;
+    pthread_mutex_lock(&stateMu);
+    *out = latestMotion;
+    if (!ready || !active || terminal || now_ns() / 1000 - out->host_timestamp_us > 250000)
+        memset(out, 0, sizeof *out);
+    pthread_mutex_unlock(&stateMu);
+}
 void ns2_stop_rumble(void) {
     pthread_mutex_lock(&stateMu);
     memset(wanted, 0, sizeof wanted); stopMask = 3; dirty = YES;
@@ -571,7 +603,7 @@ int ns2_shutdown(const char *reason, unsigned timeout_ms) {
     on_queue(^{
         if (target != bridge) return;
         [target dispose]; bridge = nil;
-        stateCallback = NULL; statusCallback = NULL; callbackContext = NULL;
+        stateCallback = NULL; statusCallback = NULL; motionCallback = NULL; callbackContext = NULL;
     });
     LOG("%sNS2 Pro BLE shutdown reason=%s result=%s（仅传输提交，非物理电机确认）", pending ? "【红】" : "", reason ?: "unknown", pending ? "timeout" : "submitted");
     return !pending;

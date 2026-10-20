@@ -19,6 +19,13 @@ The project code is MIT licensed. The complete MIT grant and disclaimer are in
   [switch2_controller_research](https://github.com/ndeadly/switch2_controller_research).
   Xbox rumble mask/timing facts were cross-checked with xpadneo and SDL;
   their implementation code was not copied.
+  Motion/accessory regression vectors quote two captured BLE notifications;
+  capture filenames and frame numbers are recorded in MotionAccessoryTests.swift.
+- The local DSU interface independently implements the
+  [Cemuhook protocol description](https://github.com/v1993/cemuhook-protocol).
+  Sensor-axis rotation was cross-checked with the
+  [SDL Switch 2 driver](https://github.com/libsdl-org/SDL/blob/8a1684fbbc8b04c94cdf6b304450c5d941d0cafb/src/joystick/hidapi/SDL_hidapi_switch2.c);
+  its implementation code was not copied.
 - App icon controller outline adapted from Lucide `gamepad-2`, ISC licensed.
   The editable Apple Icon Composer project and full attribution are in
   [Resources/IconSources/ATTRIBUTION.md](Resources/IconSources/ATTRIBUTION.md).

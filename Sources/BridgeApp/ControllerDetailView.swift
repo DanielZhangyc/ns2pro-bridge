@@ -46,6 +46,28 @@ struct ControllerDetailView: View {
                     }
                 }
             }
+            if model.ready {
+                Section {
+                    if model.motionEnabled {
+                        LabeledContent("Gyroscope", value: model.motionSummary.isEmpty
+                                       ? L10n.text("Waiting for motion data") : model.motionSummary).monospacedDigit()
+                        LabeledContent("Motion Interface", value: "127.0.0.1:26760 (DSU)")
+                    }
+                    if let connected = model.headsetConnected {
+                        LabeledContent("Headphone Jack", value: L10n.text(!connected ? "Not connected"
+                            : model.headsetMicrophone == nil ? "Audio accessory connected"
+                            : model.headsetMicrophone == true ? "Headset connected" : "Headphones connected"))
+                    } else if let raw = model.headsetRawState {
+                        LabeledContent("Headphone Jack", value: L10n.format("Unknown state (0x%02X)", raw))
+                    }
+                    if let state = model.nfcState {
+                        LabeledContent("NFC Processor", value: state == 0 ? L10n.text("Idle") : L10n.format("State %lld", state))
+                    } else {
+                        LabeledContent("NFC Processor", value: L10n.text("Status unavailable"))
+                    }
+                } header: { Text("Motion and Accessories") }
+                footer: { Text("Accessory detection only. NFC tag reading and Bluetooth headphone audio are not available.") }
+            }
             Section {
                 Button {
                     detailsExpanded.toggle()
@@ -164,12 +186,19 @@ struct BridgeSettingsView: View {
             } header: { Text("Dual-Frequency Interface") }
             footer: { Text("Standard games provide left and right intensity. Dual-frequency effects require app integration. Disconnect the controller before changing this setting.") }
             Section {
+                Toggle("Share motion with local apps (DSU)", isOn: $model.motionEnabled).disabled(model.running || model.busy)
+                if model.motionEnabled {
+                    LabeledContent("Server", value: "127.0.0.1:26760")
+                }
+            } header: { Text("Experimental Motion Interface") }
+            footer: { Text("Select DSU slot 0 in a compatible app. Disconnect before changing this setting. Motion mode uses a separate report; firmware battery level, charging, and NFC status are unavailable. Device axes and emulator behavior still need hardware validation.") }
+            Section {
                 LabeledContent("A / B / X / Y", value: L10n.text("Xbox B / A / Y / X"))
                 LabeledContent("Home / Capture", value: L10n.text("Guide / Share"))
             } header: { Text("System Mapping") }
             footer: { Text("Buttons map by physical position. C, GL, and GR are visible in the main window but are not mapped to the system controller.") }
         }
         .formStyle(.grouped)
-        .frame(width: 470, height: 420)
+        .frame(width: 500, height: 600)
     }
 }

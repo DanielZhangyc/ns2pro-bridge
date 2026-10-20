@@ -25,6 +25,20 @@ private let statusCallback: ns2_status_callback = { status, message, context in
     Task { @MainActor in BridgeModel.shared.receiveStatus(session: session, value: value, message: text) }
 }
 
+private let motionCallback: ns2_motion_callback = { motion, context in
+    guard let motion, let context, motion.pointee.known != 0 else { return }
+    let session = Unmanaged<CallbackContext>.fromOpaque(context).takeUnretainedValue().session
+    let value = motion.pointee
+    // 与 SDL 的 Switch 2 驱动使用相同的坐标旋转；加速度和角速度必须一起旋转。
+    // Use the SDL Switch 2 driver's rotation for both acceleration and angular velocity.
+    // https://github.com/libsdl-org/SDL/blob/8a1684fbbc8b04c94cdf6b304450c5d941d0cafb/src/joystick/hidapi/SDL_hidapi_switch2.c
+    let sample = DSUMotionSample(timestampMicroseconds: value.host_timestamp_us,
+                                 accelerationX: value.acceleration_x, accelerationY: value.acceleration_z,
+                                 accelerationZ: -value.acceleration_y,
+                                 gyroX: value.gyro_x, gyroY: value.gyro_z, gyroZ: -value.gyro_y)
+    Task { @MainActor in BridgeModel.shared.receiveMotion(session: session, sample: sample) }
+}
+
 @MainActor final class BridgeModel: ObservableObject {
     static let shared = BridgeModel()
     @Published var status = L10n.text("Not connected")
@@ -33,6 +47,7 @@ private let statusCallback: ns2_status_callback = { status, message, context in
     @Published var busy = false
     @Published var gain = 2.0
     @Published var nativeEnabled = true
+    @Published var motionEnabled = false
     @Published private(set) var ready = false
     @Published private(set) var deviceName = L10n.text("Nintendo Switch 2 Pro")
     @Published private(set) var deviceIdentifier = L10n.text("Not connected")
@@ -43,6 +58,11 @@ private let statusCallback: ns2_status_callback = { status, message, context in
     @Published private(set) var charging: Bool?
     @Published private(set) var signalStrength: Int?
     @Published private(set) var connectedSince: Date?
+    @Published private(set) var motionSummary = ""
+    @Published private(set) var nfcState: Int?
+    @Published private(set) var headsetConnected: Bool?
+    @Published private(set) var headsetMicrophone: Bool?
+    @Published private(set) var headsetRawState: Int?
     let input = ControllerInputModel()
     private var lastInfoDisplay = 0.0
     let provisioned = Bundle.main.object(forInfoDictionaryKey: "NS2VirtualHIDProvisioned") as? Bool == true
@@ -67,6 +87,15 @@ private let statusCallback: ns2_status_callback = { status, message, context in
         ns2_stop_rumble()
         self?.detail = message
     })
+    private lazy var motionServer = DSUMotionServer(onError: { [weak self] message in
+        let failedSession = self?.session
+        Task { @MainActor [weak self] in
+            guard let self, self.session == failedSession, self.running else { return }
+            await self.disconnect()
+            self.status = L10n.text("Motion interface failed")
+            self.detail = message
+        }
+    })
 
     func connect() async {
         guard provisioned, !running, !busy else { return }
@@ -78,10 +107,12 @@ private let statusCallback: ns2_status_callback = { status, message, context in
             await virtual.setRumbleSuppressed(true)
             try await virtual.start()
             if nativeEnabled { try native.start() }
+            if motionEnabled { try motionServer.start() }
             setenv("NS2PRO_RUMBLE_GAIN", String(gain), 1)
             let context = CallbackContext(session)
             callbackContext = context
-            guard ns2_start(inputCallback, statusCallback, Unmanaged.passUnretained(context).toOpaque()) == 1 else {
+            guard ns2_start_with_motion(inputCallback, statusCallback, motionEnabled ? motionCallback : nil,
+                                       Unmanaged.passUnretained(context).toOpaque()) == 1 else {
                 throw NativeHapticsError.system(L10n.text("Could not start the Bluetooth adapter"), EIO)
             }
             running = true
@@ -94,6 +125,7 @@ private let statusCallback: ns2_status_callback = { status, message, context in
             timer = expiryTimer
         } catch {
             native.stop()
+            motionServer.stop()
             await virtual.stop()
             callbackContext = nil
             status = L10n.text("Connection failed")
@@ -117,6 +149,7 @@ private let statusCallback: ns2_status_callback = { status, message, context in
         rumbleUntil = nil
         rumbleRevision &+= 1
         native.stop()
+        motionServer.stop()
         ns2_stop_rumble()
         let stopped = ns2_shutdown(L10n.text("User disconnect"), 350)
         callbackContext = nil
@@ -132,6 +165,7 @@ private let statusCallback: ns2_status_callback = { status, message, context in
         update(\.ready, value == NS2_STATUS_READY.rawValue)
         if ready && !wasReady {
             connectedSince = Date()
+            if motionEnabled { motionServer.setConnected(true) }
             refreshDeviceInfo()
             Task {
                 guard session == self.session, self.ready else { return }
@@ -148,6 +182,7 @@ private let statusCallback: ns2_status_callback = { status, message, context in
         default: break
         }
         if wasReady && !ready {
+            if motionEnabled { motionServer.setConnected(false) }
             clearDeviceInfo()
             nativeUntil = nil
             rumbleUntil = nil
@@ -159,6 +194,13 @@ private let statusCallback: ns2_status_callback = { status, message, context in
                 await publishNeutral(session: session)
             }
         }
+    }
+
+    fileprivate func receiveMotion(session: UInt64, sample: DSUMotionSample) {
+        guard session == self.session, ready, motionEnabled else { return }
+        let now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000
+        guard sample.timestampMicroseconds <= now, now - sample.timestampMicroseconds <= 250000 else { return }
+        motionServer.publish(sample)
     }
 
     fileprivate func publish(session: UInt64, buttons: UInt64, lx: Int32, ly: Int32, rx: Int32, ry: Int32) async {
@@ -263,6 +305,14 @@ private let statusCallback: ns2_status_callback = { status, message, context in
         update(\.telemetryError, error)
         update(\.charging, info.charging_known != 0 ? info.charging != 0 : nil)
         update(\.signalStrength, info.rssi_known != 0 ? Int(info.rssi_dbm) : nil)
+        update(\.nfcState, info.nfc_state_known != 0 ? Int(info.nfc_state) : nil)
+        update(\.headsetConnected, info.headset_connected_known != 0 ? info.headset_connected != 0 : nil)
+        update(\.headsetMicrophone, info.headset_microphone_known != 0 ? info.headset_microphone != 0 : nil)
+        update(\.headsetRawState, info.headset_state_known != 0 ? Int(info.headset_state) : nil)
+        var motion = ns2_motion()
+        ns2_get_motion(&motion)
+        update(\.motionSummary, motion.known != 0
+               ? L10n.format("%+.1f, %+.1f, %+.1f °/s", Double(motion.gyro_x), Double(motion.gyro_y), Double(motion.gyro_z)) : "")
     }
 
     private func update<Value: Equatable>(_ keyPath: ReferenceWritableKeyPath<BridgeModel, Value>, _ value: Value) {
@@ -277,6 +327,11 @@ private let statusCallback: ns2_status_callback = { status, message, context in
         update(\.charging, nil)
         update(\.signalStrength, nil)
         update(\.connectedSince, nil)
+        update(\.motionSummary, "")
+        update(\.nfcState, nil)
+        update(\.headsetConnected, nil)
+        update(\.headsetMicrophone, nil)
+        update(\.headsetRawState, nil)
         input.clear()
         update(\.deviceIdentifier, L10n.text("Not connected"))
     }

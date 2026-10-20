@@ -15,6 +15,20 @@ typedef struct { uint64_t buttons; uint16_t lx, ly, rx, ry; } ns2_raw_input;
 int ns2_decode_input_report(unsigned report_id, const uint8_t *bytes, size_t length, ns2_raw_input *out);
 typedef struct { float low_amp, low_freq, high_amp, high_freq; } ns2_vibration;
 typedef struct {
+    uint8_t known;
+    uint32_t device_timestamp_us, report_counter;
+    uint64_t host_timestamp_us;
+    float acceleration_x, acceleration_y, acceleration_z;
+    float gyro_x, gyro_y, gyro_z;
+    float temperature_celsius;
+} ns2_motion;
+// report05 默认量程：加速度 g、角速度 °/s，轴序保持设备原值；不套用未知的工厂运动校准。
+// Report05 default ranges: acceleration in g and angular velocity in degrees/s, preserving device axes without unknown factory motion calibration.
+int ns2_decode_report05_motion(const uint8_t *bytes, size_t length, ns2_motion *out);
+// 复制最近运动样本，超过 250 ms 或断开后清空；不产生设备访问。
+// Copy the latest motion sample, clearing it after 250 ms or disconnection without accessing hardware.
+void ns2_get_motion(ns2_motion *out);
+typedef struct {
     uint8_t connected, ready;
     uint8_t battery_known;
     uint16_t battery_millivolts;
@@ -27,6 +41,10 @@ typedef struct {
     char name[128];
     char identifier[64];
     char telemetry_error[160];
+    uint8_t nfc_state_known, nfc_state;
+    uint8_t headset_state_known, headset_state;
+    uint8_t headset_connected_known, headset_connected;
+    uint8_t headset_microphone_known, headset_microphone;
 } ns2_info;
 // 轮询仅复制最后收到的数据，不触发扫描、连接或 RSSI 请求；RSSI 来自发现广播。
 // Polling only copies the latest received data without scanning, connecting or requesting RSSI; RSSI comes from discovery advertisements.
@@ -37,6 +55,10 @@ void ns2_get_info(ns2_info *out);
 // Pure decoders update only their own fields and preserve the other report's data; invalid input returns 0 and clears this report's flags and values.
 int ns2_decode_report05_telemetry(const uint8_t *bytes, size_t length, ns2_info *out);
 int ns2_decode_report09_telemetry(const uint8_t *bytes, size_t length, ns2_info *out);
+// 只读取 NFC 处理器和耳机插入状态；不代表读卡、音频播放或麦克风传输已启用。
+// Read NFC processor and headset insertion state only, without implying tag reading, playback or microphone transport.
+int ns2_decode_report05_accessories(const uint8_t *bytes, size_t length, ns2_info *out);
+int ns2_decode_report09_accessories(const uint8_t *bytes, size_t length, ns2_info *out);
 typedef enum {
     NS2_STATUS_IDLE, NS2_STATUS_SCANNING, NS2_STATUS_CONNECTING,
     NS2_STATUS_INITIALIZING, NS2_STATUS_READY, NS2_STATUS_DISCONNECTED,
@@ -51,10 +73,14 @@ enum { NS2_CAP_LEFT = 1, NS2_CAP_RIGHT = 2, NS2_STICK_MAX = 32767 };
 // Callbacks run on the serial BLE queue; pointers are valid only during the call. Keep context alive until shutdown returns.
 typedef void (*ns2_state_callback)(const ns2_state *state, void *context);
 typedef void (*ns2_status_callback)(ns2_status status, const char *message, void *context);
+typedef void (*ns2_motion_callback)(const ns2_motion *motion, void *context);
 
 // 成功返回 1；重复启动或非法 NS2PRO_RUMBLE_GAIN 返回 0，尚未代表连接成功。
 // Returns 1 on accepted start; duplicate start or invalid NS2PRO_RUMBLE_GAIN returns 0, without implying a connection.
 int ns2_start(ns2_state_callback state, ns2_status_callback status, void *context);
+// 非空 motion 回调启用 IMU 并独占 report05；report09 的压缩运动格式尚未实现，因此不订阅它。
+// A non-null motion callback enables IMU and uses report05 exclusively; report09's packed motion format is not implemented and is not subscribed.
+int ns2_start_with_motion(ns2_state_callback state, ns2_status_callback status, ns2_motion_callback motion, void *context);
 void ns2_set_active(int active);
 unsigned ns2_caps(void);
 unsigned ns2_device_caps(void);
