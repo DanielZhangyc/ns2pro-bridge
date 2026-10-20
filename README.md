@@ -2,7 +2,9 @@
 
 [简体中文](README.zh-CN.md)
 
-A standalone Nintendo Switch 2 Pro Bluetooth adapter for macOS, providing virtual Xbox controller input, ordinary rumble and a local dual-band haptics interface.
+A standalone Nintendo Switch 2 Pro Bluetooth adapter for macOS, providing virtual Xbox controller input, ordinary rumble, a local dual-band haptics interface and experimental DSU motion output.
+
+The interface supports English and Simplified Chinese and follows macOS language preferences, with English as the default.
 
 ## Technical details
 
@@ -11,13 +13,16 @@ flowchart LR
     Controller[Switch 2 Pro] <-->|BLE| Bridge[NS2 Pro Bridge]
     Bridge <-->|Virtual Xbox HID| Games[macOS / games]
     Client[Local application] -->|Dual-band JSON socket| Bridge
+    Bridge -->|DSU motion / UDP| MotionClient[DSU-compatible application]
 ```
 
 - **Input**: CoreBluetooth reads buttons and calibrated sticks; CoreHID publishes an `Xbox Wireless Controller` device. Face buttons map by physical position. ZL/ZR become fully pressed Xbox triggers.
-- **Controller window**: overlays live input on a controller photograph and displays connection state, device name and identifier, discovery-time RSSI and battery voltage from report05. Firmware battery level (0–9), charging and external-power flags appear only after a valid report09 arrives; the app does not infer a precise percentage. The native Settings window (`⌘,`) contains gain, the dual-band interface and a 0.3-second vibration test.
+- **Controller window**: overlays live input on a controller photograph and displays connection state, device name and identifier, discovery-time RSSI and battery voltage from report05. Firmware battery level (0–9), charging and external-power flags appear only after a valid report09 arrives; the app does not infer a precise percentage. The native Settings window (`⌘,`) contains rumble strength, the dual-band and motion interfaces, and a 0.3-second vibration test.
 - **Connection feedback**: plays the controller's built-in connection vibration, `0A/02` sample 3, after initialization.
 - **Ordinary rumble**: Xbox output reports retain left/right intensity, timing and repeats. Left output uses 160 Hz and right output 320 Hz; trigger amplitudes merge into the corresponding main motor. This path cannot reconstruct the original HD vibration waveform.
 - **Dual-band haptics**: applications can supply independent amplitude and frequency for the low/high bands on each side through a local JSON socket. Applications must explicitly integrate this interface.
+- **Experimental motion**: an opt-in loopback DSU/Cemuhook server exposes report05 accelerometer and gyro data to compatible applications on `127.0.0.1:26760`, slot 0. Enable it in Settings before connecting. It uses default sensor ranges and monotonic receive timestamps. It does not add motion to Xbox HID.
+- **Accessories**: report05 provides headphone insertion detection; with motion disabled, report09 also provides headphone/headset classification and the NFC processor's raw state. Detection does not enable NFC tag reading or audio streaming.
 - **Lifecycle**: disconnect, sleep and exit clear vibration. A physical link loss retains the virtual device with neutral input until explicit disconnect or exit. Dual-band commands expire within one second and discard superseded ordinary effects; ordinary indefinite effects have a renewable five-second limit.
 
 ### HD vibration: frequency encoding
@@ -61,10 +66,10 @@ Requires macOS 26+, a Switch 2 Pro controller and Bluetooth.
 
 1. Release the controller from any other application currently using it.
 2. Open the app and use its window or menu-bar controls. It does not connect automatically.
-3. Open Settings (`⌘,`) to select vibration gain (default 2×) and optionally enable the local dual-band interface, then choose **连接**. Allow Bluetooth access if macOS requests it.
-4. Hold the controller's top SYNC button until the player lights flash. Wait for **手柄已连接** and check the player light, then start the game.
+3. Open **Settings** (`⌘,`) to select **Rumble Strength** (default 2×) and configure the local interfaces. The dual-frequency interface is enabled by default; **Share motion with local apps (DSU)** is off by default. Change these settings while disconnected.
+4. Choose **Connect Controller** from the menu bar, or click the link icon in the controller window. Allow Bluetooth access if macOS requests it. Hold the controller's top SYNC button until the player lights flash. Wait for **Controller connected** and check the player light, then start the game.
 
-Choose **断开** in the controller window to release the controller, or quit the app. Sleep disconnects it; reconnect manually after waking. The default gain comes from earlier user testing, rather than console calibration.
+Choose **Disconnect Controller** from the menu bar, click the disconnect icon in the controller window, or quit the app to release the controller. Closing the last app window hides the Dock icon and keeps the bridge running in the menu bar. Sleep disconnects it; reconnect manually after waking. The default gain comes from earlier user testing, rather than console calibration.
 
 ### Controls
 
@@ -81,7 +86,7 @@ Games may handle Guide and Share differently. Controller recognition and ordinar
 
 ## Local dual-band interface
 
-When connected with **允许本机应用发送双频震动** enabled in Settings, the app binds `~/.ns2pro-bridge/haptics.sock`, a Unix datagram socket accessible only to the current user. Each UTF-8 JSON datagram supplies a complete frame for both sides. A standard-library Python client is included:
+When connected with **Allow local apps to send dual-frequency rumble** enabled in Settings, the app binds `~/.ns2pro-bridge/haptics.sock`, a Unix datagram socket accessible only to the current user. Each UTF-8 JSON datagram supplies a complete frame for both sides. A standard-library Python client is included:
 
 ```sh
 python3 tools/haptics.py \
@@ -94,11 +99,27 @@ Each side takes low amplitude, low frequency, high amplitude and high frequency.
 
 See the [v1 protocol](docs/native-haptics.md) for the JSON schema, lease and stop behavior, arbitration and errors.
 
+## Local motion interface (experimental)
+
+Enable **Share motion with local apps (DSU)** in Settings before connecting the controller. In a DSU/Cemuhook-compatible application, set the server to `127.0.0.1:26760` and select slot 0. Buttons and sticks continue through Xbox HID; DSU supplies accelerometer and gyro data only.
+
+The included standard-library client can inspect received motion packets:
+
+```sh
+python3 tools/dsu-monitor.py --seconds 10
+```
+
+Motion mode does not subscribe to report09, so firmware battery level, charging, external-power and NFC state are unavailable while it is enabled. Battery voltage and headphone insertion detection remain available. Disconnect before changing the motion setting.
+
 ## Known limitations
 
 - One controller over Bluetooth; no USB, iOS or iPadOS support.
-- No gyro, NFC, headphone audio or custom C/GL/GR mapping to Xbox output.
-- No per-game profiles, login launch or automatic updates.
+- Motion uses default sensor ranges without factory or user calibration. Real BLE-to-DSU streaming and disconnect cleanup have been tested on one controller; axis directions in target emulators and sensor accuracy remain unverified.
+- C, GL and GR are detected and displayed in the controller window but are not forwarded to Xbox HID. No button remapping or per-game profiles.
+- NFC and headphone support is limited to status detection. NFC tag reading/writing and Bluetooth headphone audio are not implemented; headphone insertion and headset classification still need physical verification. USB headset audio is a separate system-device path and is not implemented or verified by this Bluetooth adapter.
+- No launch at login or automatic updates.
+
+See [motion and accessory protocol notes](docs/motion-accessories.md) for the DSU interface, evidence and remaining protocol gaps.
 
 ## License
 
